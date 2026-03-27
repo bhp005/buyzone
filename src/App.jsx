@@ -138,7 +138,7 @@ Rules:
 function DataCell({ label, value, color }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"3px" }}>
-      <div style={{ fontSize:"7px", color:"#264426", letterSpacing:"1.5px" }}>{label}</div>
+      <div style={{ fontSize:"9px", color:"#88aa88", letterSpacing:"1.5px" }}>{label}</div>
       <div style={{ fontSize:"13px", fontWeight:"bold", color: color || "#c8d8c8" }}>{value}</div>
     </div>
   );
