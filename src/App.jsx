@@ -29,108 +29,65 @@ const fmtTime = (ms) => {
 };
 
 // ─── API Key: env var on Netlify, auto-injected in Claude sandbox ─────────────
-const getApiKey = () =>
-  (typeof import.meta !== "undefined" && import.meta.env?.VITE_ANTHROPIC_KEY)
-    ? import.meta.env.VITE_ANTHROPIC_KEY
-    : undefined;
+// ─── Finnhub real-time data ───────────────────────────────────────────────────
+const getFinnhubKey = () =>
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_FINNHUB_KEY)
+    ? import.meta.env.VITE_FINNHUB_KEY
+    : null;
 
-// ─── Single batched API call for ALL tickers ──────────────────────────────────
-async function fetchAllStocks(tickers) {
-  if (!tickers.length) return {};
+async function fetchOneTicker(ticker, key) {
+  const base = "https://finnhub.io/api/v1";
+  const [quoteRes, metricRes, targetRes, profileRes] = await Promise.all([
+    fetch(`${base}/quote?symbol=${ticker}&token=${key}`),
+    fetch(`${base}/stock/metric?symbol=${ticker}&metric=all&token=${key}`),
+    fetch(`${base}/stock/price-target?symbol=${ticker}&token=${key}`),
+    fetch(`${base}/stock/profile2?symbol=${ticker}&token=${key}`),
+  ]);
+  const [quote, metric, target, profile] = await Promise.all([
+    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(),
+  ]);
 
-  const prompt = `Return stock market data for these tickers: ${tickers.join(", ")}.
+  const cur    = quote.c;
+  const high52 = metric?.metric?.["52WeekHigh"];
+  const low52  = metric?.metric?.["52WeekLow"];
+  if (!cur || cur === 0) return { ticker, error: "Invalid ticker or no data" };
+  if (!high52 || !low52) return { ticker, error: "Insufficient market data" };
 
-Use your most recent training knowledge. Return ONLY a valid JSON object — no markdown, no explanation, no code fences.
+  const dayChangePct  = quote.dp ?? 0;
+  const analystTarget = target?.targetMean ?? cur * 1.12;
+  const name          = profile?.name || ticker;
+  const pct           = ((cur - high52) / high52) * 100;
+  const status        = getStatus(pct);
+  const bestBuy       = high52 * 0.73;
+  const upside        = ((analystTarget - cur) / cur * 100);
+  const dn            = Math.abs(pct).toFixed(0);
 
-Format:
-{
-  "TICKER": {
-    "name": "Company Name",
-    "price": 123.45,
-    "high52": 200.00,
-    "low52": 80.00,
-    "analystTarget": 160.00,
-    "dayChangePct": -1.23
-  }
+  const strategy = {
+    "DEEP CORRECTION": `Down ${dn}% from high. Exceeds the 27% "Best Buy" buffer — high value zone.`,
+    "CORRECTION":      `${dn}% pullback. Significant discount, approaching strategic buy floor.`,
+    "PULLBACK":        `${dn}% off highs. Minor weakness — set alerts for the 10–15% range.`,
+    "WATCH":           `Only ${dn}% below high. Wait for a 10%+ correction before scaling in.`,
+    "HEALTHY":         `At or near 52W high. Expensive — avoid chasing, wait for a pullback.`,
+  }[status];
+
+  return {
+    ticker, name, price: cur, high52, low52,
+    pct, upside, dayChangePct,
+    target: analystTarget, bestBuy, status, strategy,
+    updatedAt: Date.now(),
+  };
 }
 
-Rules:
-- price: most recent price you know
-- high52 / low52: 52-week high and low
-- analystTarget: analyst consensus target, or price * 1.12 if unknown
-- dayChangePct: number only, no % symbol (e.g. -1.23)
-- Omit invalid tickers
-- Return ONLY the JSON object, nothing else`;
+async function fetchAllStocks(tickers) {
+  if (!tickers.length) return {};
+  const key = getFinnhubKey();
+  if (!key) throw new Error("No Finnhub API key. Set VITE_FINNHUB_KEY in Netlify environment variables.");
 
-  const apiKey = getApiKey();
-
-  const headers = {
-    "Content-Type": "application/json",
-    "anthropic-version": "2023-06-01",
-    "anthropic-dangerous-direct-browser-access": "true",
-    ...(apiKey ? { "x-api-key": apiKey } : {}),
-  };
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      system: "You are a financial data assistant. Return ONLY valid JSON, no markdown, no explanation, no code fences.",
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  const data = await res.json();
-
-  const text = (data.content || [])
-    .filter(b => b.type === "text")
-    .map(b => b.text)
-    .join("");
-
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("No JSON in response");
-  const raw = JSON.parse(match[0]);
-
+  const settled = await Promise.allSettled(tickers.map(t => fetchOneTicker(t, key)));
   const results = {};
-  for (const [ticker, q] of Object.entries(raw)) {
-    const cur    = Number(q.price);
-    const high52 = Number(q.high52);
-    const low52  = Number(q.low52);
-    if (!cur || !high52 || !low52) { results[ticker.toUpperCase()] = { ticker: ticker.toUpperCase(), error: "No data" }; continue; }
-
-    const pct     = ((cur - high52) / high52) * 100;
-    const status  = getStatus(pct);
-    const target  = Number(q.analystTarget) || cur * 1.12;
-    const bestBuy = high52 * 0.73;
-    const upside  = ((target - cur) / cur * 100);
-    const dn      = Math.abs(pct).toFixed(0);
-
-    const strategy = {
-      "DEEP CORRECTION": `Down ${dn}% from high. Exceeds the 27% "Best Buy" buffer — high value zone.`,
-      "CORRECTION":      `${dn}% pullback. Significant discount, approaching strategic buy floor.`,
-      "PULLBACK":        `${dn}% off highs. Minor weakness — set alerts for the 10–15% range.`,
-      "WATCH":           `Only ${dn}% below high. Wait for a 10%+ correction before scaling in.`,
-      "HEALTHY":         `At or near 52W high. Expensive — avoid chasing, wait for a pullback.`,
-    }[status];
-
-    results[ticker.toUpperCase()] = {
-      ticker: ticker.toUpperCase(),
-      name: q.name || ticker,
-      price: cur, high52, low52,
-      pct, upside,
-      dayChangePct: Number(q.dayChangePct) || 0,
-      target, bestBuy, status, strategy,
-      updatedAt: Date.now(),
-    };
-  }
-
-  for (const t of tickers) {
-    if (!results[t]) results[t] = { ticker: t, error: "Unknown ticker" };
-  }
-
+  settled.forEach((res, i) => {
+    results[tickers[i]] = res.status === "fulfilled" ? res.value : { ticker: tickers[i], error: "Fetch failed" };
+  });
   return results;
 }
 
@@ -138,7 +95,7 @@ Rules:
 function DataCell({ label, value, color }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"3px" }}>
-      <div style={{ fontSize:"9px", color:"#88aa88", letterSpacing:"1.5px" }}>{label}</div>
+      <div style={{ fontSize:"7px", color:"#264426", letterSpacing:"1.5px" }}>{label}</div>
       <div style={{ fontSize:"13px", fontWeight:"bold", color: color || "#c8d8c8" }}>{value}</div>
     </div>
   );
