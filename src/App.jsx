@@ -388,7 +388,7 @@ export default function App() {
       <style>{css}</style>
 
       {/* HEADER */}
-      <div style={S.hdr}>
+      <div style={S.hdr} className="hdr">
         <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
           <span style={{ fontSize:"22px", color:"#00ff88" }}>◈</span>
           <div>
@@ -446,7 +446,7 @@ export default function App() {
       )}
 
       {/* ADD BAR */}
-      <div style={{ display:"flex", alignItems:"center", gap:"10px", padding:"12px 20px", borderBottom:"1px solid #0d1a0d", flexWrap:"wrap" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:"10px", padding:"12px 20px", borderBottom:"1px solid #0d1a0d", flexWrap:"wrap" }} className="add-bar">
         <div style={{ display:"flex", alignItems:"center", background:"#09120a", border:"1px solid #183018", borderRadius:"4px", padding:"0 12px", flex:1, maxWidth:"400px" }}>
           <span style={{ color:"#00ff88", fontSize:"15px", fontWeight:"bold", marginRight:"6px" }}>$</span>
           <input style={S.inp} value={inputVal}
@@ -465,7 +465,7 @@ export default function App() {
           <div style={{ fontSize:"40px", color:"#0d1f0d" }}>◈</div>
           <div style={{ color:"#1a3a1a", fontSize:"13px", letterSpacing:"4px" }}>NO STOCKS TRACKED</div>
           <div style={{ color:"#0d1f0d", fontSize:"10px", letterSpacing:"2px", marginTop:"4px" }}>Add tickers above, or click a suggestion:</div>
-          <div style={{ display:"flex", gap:"8px", marginTop:"8px", flexWrap:"wrap", justifyContent:"center" }}>
+          <div style={{ display:"flex", gap:"8px", marginTop:"8px", flexWrap:"wrap", justifyContent:"center" }} className="sugg-row">
             {["AAPL","TSLA","NVDA","MSFT","AMZN","META","GOOGL"].map(t => (
               <button key={t} className="suggBtn" style={S.suggBtn} onClick={() => setInputVal(p => p ? p+","+t : t)}>{t}</button>
             ))}
@@ -475,7 +475,7 @@ export default function App() {
 
       {/* GRID */}
       {watchlist.length > 0 && (
-        <div style={S.grid}>
+        <div style={S.grid} className="grid">
           {watchlist.map(t => (
             <StockCard key={t} data={stockData[t] || { ticker: t, loading: true }} onRemove={removeTicker} />
           ))}
@@ -486,13 +486,13 @@ export default function App() {
 }
 
 const S = {
-  root:    { minHeight:"100vh", background:"#070b09", color:"#c8d8c8", fontFamily:"'Courier New',monospace" },
+  root:    { minHeight:"100vh", background:"#070b09", color:"#c8d8c8", fontFamily:"'Courier New',monospace", overflowX:"hidden" },
   hdr:     { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 20px", borderBottom:"1px solid #0d1a0d", background:"rgba(0,255,136,0.015)", flexWrap:"wrap", gap:"12px" },
   rnBtn:   { display:"flex", alignItems:"center", background:"transparent", border:"2px solid #00ff88", color:"#00ff88", padding:"10px 22px", fontFamily:"'Courier New',monospace", fontSize:"13px", letterSpacing:"3px", fontWeight:"bold", cursor:"pointer", borderRadius:"5px", boxShadow:"0 0 14px rgba(0,255,136,0.2)", transition:"all 0.15s" },
   rnBtnOff:{ opacity:.35, cursor:"not-allowed", boxShadow:"none" },
   intBtn:  { background:"transparent", border:"1px solid #1a2a1a", color:"#264426", padding:"3px 7px", fontFamily:"'Courier New',monospace", fontSize:"8px", letterSpacing:"1px", cursor:"pointer", borderRadius:"3px" },
   inp:     { background:"transparent", border:"none", outline:"none", color:"#00ff88", fontSize:"12px", fontFamily:"'Courier New',monospace", letterSpacing:"2px", padding:"11px 0", width:"100%" },
-  addBtn:  { background:"transparent", border:"1px solid #00ff88", color:"#00ff88", padding:"10px 16px", fontFamily:"'Courier New',monospace", fontSize:"11px", letterSpacing:"2px", cursor:"pointer", borderRadius:"4px", fontWeight:"bold" },
+  addBtn:  { background:"transparent", border:"1px solid #00ff88", color:"#00ff88", padding:"10px 16px", fontFamily:"'Courier New',monospace", fontSize:"11px", letterSpacing:"2px", cursor:"pointer", borderRadius:"4px", fontWeight:"bold", whiteSpace:"nowrap" },
   grid:    { display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))", gap:"14px", padding:"18px 20px" },
   card:    { background:"#090f0a", border:"2px solid #1a2a1a", borderRadius:"6px", padding:"16px", display:"flex", flexDirection:"column", gap:"10px", transition:"border-color 0.3s" },
   loadBox: { display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 0" },
@@ -525,4 +525,69 @@ const css = `
   @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .pulse { animation:pulse 0.7s ease infinite; }
   .pulse-slow { animation:pulse-slow 3s ease infinite; }
+
+  /* ── MOBILE ── */
+  @media (max-width: 600px) {
+    .hdr {
+      flex-direction: column !important;
+      align-items: flex-start !important;
+      padding: 12px 14px !important;
+      gap: 10px !important;
+    }
+    .rnBtn {
+      width: 100% !important;
+      justify-content: center !important;
+      font-size: 12px !important;
+      padding: 10px 16px !important;
+    }
+    .hdr-right {
+      width: 100% !important;
+      align-items: flex-start !important;
+    }
+    .add-bar {
+      padding: 10px 14px !important;
+      gap: 8px !important;
+    }
+    .add-bar input {
+      font-size: 14px !important;
+    }
+    .addBtn {
+      padding: 10px 14px !important;
+      font-size: 12px !important;
+    }
+    .status-strip {
+      padding: 6px 14px !important;
+      font-size: 8px !important;
+    }
+    .grid {
+      grid-template-columns: 1fr !important;
+      padding: 12px 10px !important;
+      gap: 12px !important;
+    }
+    .card {
+      padding: 14px 12px !important;
+    }
+    .sugg-row {
+      gap: 6px !important;
+    }
+    .suggBtn {
+      font-size: 10px !important;
+      padding: 6px 10px !important;
+    }
+  }
+
+  /* ── TABLET ── */
+  @media (max-width: 900px) and (min-width: 601px) {
+    .grid {
+      grid-template-columns: 1fr 1fr !important;
+      padding: 14px 14px !important;
+    }
+  }
+
+  /* ── TOUCH TARGETS ── */
+  @media (hover: none) {
+    .iconBtn { padding: 8px 14px !important; font-size: 13px !important; }
+    .intBtn  { padding: 6px 10px !important; font-size: 10px !important; }
+    .suggBtn { padding: 8px 14px !important; font-size: 11px !important; }
+  }
 `;
