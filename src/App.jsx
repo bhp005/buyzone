@@ -159,21 +159,21 @@ const getFinnhubKey = () =>
 async function fetchOneTicker(ticker, key) {
   const base = "https://finnhub.io/api/v1";
   const now      = Math.floor(Date.now() / 1000);
-  const from60   = now - 90 * 86400; // 90 days back for enough EMA data
   const earnFrom = new Date().toISOString().split("T")[0];
   const earnTo   = new Date(Date.now() + 120 * 86400000).toISOString().split("T")[0];
+  const alphaKey = (typeof import.meta !== "undefined" && import.meta.env?.VITE_ALPHA_KEY)
+    ? import.meta.env.VITE_ALPHA_KEY : null;
 
-  const [quoteRes, metricRes, targetRes, profileRes, earnRes, candleRes] = await Promise.all([
+  const [quoteRes, metricRes, targetRes, profileRes, earnRes] = await Promise.all([
     fetch(`${base}/quote?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/metric?symbol=${ticker}&metric=all&token=${key}`),
     fetch(`${base}/stock/price-target?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/profile2?symbol=${ticker}&token=${key}`),
     fetch(`${base}/calendar/earnings?symbol=${ticker}&from=${earnFrom}&to=${earnTo}&token=${key}`),
-    fetch(`${base}/stock/candle?symbol=${ticker}&resolution=D&from=${from60}&to=${now}&token=${key}`),
   ]);
 
-  const [quote, metric, target, profile, earnData, candle] = await Promise.all([
-    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(), earnRes.json(), candleRes.json(),
+  const [quote, metric, target, profile, earnData] = await Promise.all([
+    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(), earnRes.json(),
   ]);
 
   const cur    = quote.c;
@@ -216,14 +216,30 @@ async function fetchOneTicker(ticker, key) {
     "HEALTHY":         `At or near 52W high. Expensive — avoid chasing, wait for a pullback.`,
   }[status];
 
-  // ── Candle data — real if available, simulated as fallback only
-  let closes, timestamps;
-  if (candle?.s === "ok" && candle.c?.length >= 10) {
-    // Real data from Finnhub ✅
-    closes     = candle.c;
-    timestamps = candle.t;
-  } else {
-    // Fallback: simulate from 52W range — clearly labelled in chart
+  // ── Candle data from Alpha Vantage (real) with simulation fallback
+  let closes = [], timestamps = [], chartIsReal = false;
+
+  if (alphaKey) {
+    try {
+      const avUrl = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${alphaKey}`;
+      const avRes = await fetch(avUrl, { signal: AbortSignal.timeout(8000) });
+      if (avRes.ok) {
+        const avData = await avRes.json();
+        const series = avData["Time Series (Daily)"];
+        if (series) {
+          const entries = Object.entries(series)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .slice(-60); // last 60 trading days
+          closes     = entries.map(([, v]) => parseFloat(v["4. close"]));
+          timestamps = entries.map(([d]) => Math.floor(new Date(d).getTime() / 1000));
+          chartIsReal = closes.length >= 10;
+        }
+      }
+    } catch { /* fall through to simulation */ }
+  }
+
+  // Simulation fallback if Alpha Vantage fails or no key
+  if (!chartIsReal) {
     const days = 60;
     const prices = [];
     const vol = ((high52 - low52) / low52) * 0.015;
@@ -237,8 +253,8 @@ async function fetchOneTicker(ticker, key) {
     closes     = prices;
     timestamps = Array.from({ length: days }, (_, i) =>
       Math.floor((Date.now() - (days - 1 - i) * 86400000) / 1000));
+    chartIsReal = false;
   }
-  const chartIsReal = candle?.s === "ok" && candle.c?.length >= 10;
 
   return {
     ticker, name, price: cur, high52, low52,
