@@ -159,20 +159,21 @@ const getFinnhubKey = () =>
 async function fetchOneTicker(ticker, key) {
   const base = "https://finnhub.io/api/v1";
   const now      = Math.floor(Date.now() / 1000);
-  const from60   = now - 60 * 86400;
+  const from60   = now - 90 * 86400; // 90 days back for enough EMA data
   const earnFrom = new Date().toISOString().split("T")[0];
   const earnTo   = new Date(Date.now() + 120 * 86400000).toISOString().split("T")[0];
 
-  const [quoteRes, metricRes, targetRes, profileRes, earnRes] = await Promise.all([
+  const [quoteRes, metricRes, targetRes, profileRes, earnRes, candleRes] = await Promise.all([
     fetch(`${base}/quote?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/metric?symbol=${ticker}&metric=all&token=${key}`),
     fetch(`${base}/stock/price-target?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/profile2?symbol=${ticker}&token=${key}`),
     fetch(`${base}/calendar/earnings?symbol=${ticker}&from=${earnFrom}&to=${earnTo}&token=${key}`),
+    fetch(`${base}/stock/candle?symbol=${ticker}&resolution=D&from=${from60}&to=${now}&token=${key}`),
   ]);
 
-  const [quote, metric, target, profile, earnData] = await Promise.all([
-    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(), earnRes.json(),
+  const [quote, metric, target, profile, earnData, candle] = await Promise.all([
+    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(), earnRes.json(), candleRes.json(),
   ]);
 
   const cur    = quote.c;
@@ -215,32 +216,36 @@ async function fetchOneTicker(ticker, key) {
     "HEALTHY":         `At or near 52W high. Expensive — avoid chasing, wait for a pullback.`,
   }[status];
 
-  // ── Simulate 60 days of price data from 52W range (free tier has no candle access)
-  const closes = (() => {
+  // ── Candle data — real if available, simulated as fallback only
+  let closes, timestamps;
+  if (candle?.s === "ok" && candle.c?.length >= 10) {
+    // Real data from Finnhub ✅
+    closes     = candle.c;
+    timestamps = candle.t;
+  } else {
+    // Fallback: simulate from 52W range — clearly labelled in chart
     const days = 60;
     const prices = [];
-    // Work backwards from current price using volatility derived from 52W range
-    const vol = ((high52 - low52) / low52) * 0.015; // daily vol estimate
+    const vol = ((high52 - low52) / low52) * 0.015;
     let p = cur;
     for (let i = days - 1; i >= 0; i--) {
       prices[i] = p;
-      // Random walk backwards — seed with ticker chars for consistency
       const seed = ticker.charCodeAt(i % ticker.length) / 128;
       const move = (seed - 0.5) * 2 * vol * p;
       p = Math.max(low52 * 0.95, Math.min(high52 * 1.02, p - move));
     }
-    return prices;
-  })();
-  const timestamps = Array.from({ length: 60 }, (_, i) => {
-    return Math.floor((Date.now() - (59 - i) * 86400000) / 1000);
-  });
+    closes     = prices;
+    timestamps = Array.from({ length: days }, (_, i) =>
+      Math.floor((Date.now() - (days - 1 - i) * 86400000) / 1000));
+  }
+  const chartIsReal = candle?.s === "ok" && candle.c?.length >= 10;
 
   return {
     ticker, name, price: cur, high52, low52,
     pct, upside, dayChangePct,
     target: analystTarget, bestBuy, status, strategy,
     pe, eps, ret52w, vol10d, vol3m, rsi, nextEarnings, support, resistance,
-    closes, timestamps,
+    closes, timestamps, chartIsReal,
     updatedAt: Date.now(),
   };
 }
@@ -272,7 +277,7 @@ function calcEMA(prices, period) {
 }
 
 // ─── Price Chart (SVG) ────────────────────────────────────────────────────────
-function PriceChart({ closes, timestamps, color }) {
+function PriceChart({ closes, timestamps, color, isReal }) {
   if (!closes || closes.length < 10) return (
     <div style={{ height:"120px", display:"flex", alignItems:"center", justifyContent:"center",
       fontSize:"9px", color:"#264426", letterSpacing:"2px" }}>
@@ -368,7 +373,7 @@ function PriceChart({ closes, timestamps, color }) {
       </svg>
 
       {/* Legend */}
-      <div style={{ display:"flex", gap:"14px", flexWrap:"wrap", marginTop:"4px" }}>
+      <div style={{ display:"flex", gap:"14px", flexWrap:"wrap", marginTop:"4px", alignItems:"center" }}>
         <div style={{ display:"flex", alignItems:"center", gap:"5px" }}>
           <div style={{ width:"16px", height:"2px", background:color, borderRadius:"1px" }}/>
           <span style={{ fontSize:"8px", color:"#446644", letterSpacing:"1px" }}>PRICE</span>
@@ -380,19 +385,24 @@ function PriceChart({ closes, timestamps, color }) {
           </span>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:"5px" }}>
-          <div style={{ width:"16px", height:"2px", background:"#ff9f43", borderRadius:"1px", borderTop:"1px dashed #ff9f43" }}/>
+          <div style={{ width:"16px", height:"2px", background:"#ff9f43", borderRadius:"1px" }}/>
           <span style={{ fontSize:"8px", color:"#ff9f43", letterSpacing:"1px" }}>
             EMA30 {lastEma30 ? `$${lastEma30.toFixed(2)}` : ""}
           </span>
         </div>
         {crossover && (
-          <div style={{ marginLeft:"auto" }}>
-            <span style={{ fontSize:"8px", letterSpacing:"1px", fontWeight:"bold",
-              color: crossover==="BULLISH" ? "#00ff88" : "#ff4757" }}>
-              {crossover==="BULLISH" ? "▲" : "▼"} {crossover} CROSS
-            </span>
-          </div>
+          <span style={{ fontSize:"8px", letterSpacing:"1px", fontWeight:"bold",
+            color: crossover==="BULLISH" ? "#00ff88" : "#ff4757" }}>
+            {crossover==="BULLISH" ? "▲" : "▼"} {crossover} CROSS
+          </span>
         )}
+        <span style={{ marginLeft:"auto", fontSize:"7px", letterSpacing:"1px",
+          color: isReal ? "#00ff88" : "#ff9f43",
+          background: isReal ? "rgba(0,255,136,0.08)" : "rgba(255,159,67,0.08)",
+          border: `1px solid ${isReal ? "#00ff8833" : "#ff9f4333"}`,
+          borderRadius:"3px", padding:"1px 6px" }}>
+          {isReal ? "◉ LIVE DATA" : "◎ ESTIMATED"}
+        </span>
       </div>
     </div>
   );
@@ -568,7 +578,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
       {/* Price Chart */}
       <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
         <SectionLabel>Price Chart — EMA 10 & EMA 30</SectionLabel>
-        <PriceChart closes={data.closes} timestamps={data.timestamps} color={cfg.color} />
+        <PriceChart closes={data.closes} timestamps={data.timestamps} color={cfg.color} isReal={data.chartIsReal} />
       </div>
 
       {/* Buy Zone Analysis */}
