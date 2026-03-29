@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// ─── Config ───────────────────────────────────────────────────────────────────
 const REFRESH_OPTIONS = [
   { label: "10m", ms: 10 * 60 * 1000 },
   { label: "15m", ms: 15 * 60 * 1000 },
@@ -16,35 +15,52 @@ const STATUS_CFG = {
   "HEALTHY":         { color: "#ff4757", bg: "rgba(255,71,87,0.11)",   border: "#ff4757", icon: "▼▼" },
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 const getStatus = (p) =>
   p <= -27 ? "DEEP CORRECTION" : p <= -10 ? "CORRECTION" : p <= -5 ? "PULLBACK" : p < 0 ? "WATCH" : "HEALTHY";
 
-const fmt     = (n) => (n != null ? `$${Number(n).toFixed(2)}` : "—");
-const fmtTime = (ms) => {
-  if (ms <= 0) return "00:00";
-  const m = Math.floor(ms / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  return `${m}:${String(s).padStart(2, "0")}`;
+const fmt     = (n, dec=2) => (n != null && !isNaN(n) ? `$${Number(n).toFixed(dec)}` : "—");
+const fmtNum  = (n, dec=2) => (n != null && !isNaN(n) ? Number(n).toFixed(dec) : "—");
+const fmtVol  = (n) => { if (!n) return "—"; if (n >= 1e6) return (n/1e6).toFixed(1)+"M"; if (n >= 1e3) return (n/1e3).toFixed(1)+"K"; return n.toString(); };
+const fmtTime = (ms) => { if (ms <= 0) return "00:00"; const m = Math.floor(ms/60000); const s = Math.floor((ms%60000)/1000); return `${m}:${String(s).padStart(2,"0")}`; };
+
+const getRsiColor = (rsi) => {
+  if (!rsi) return "#c8d8c8";
+  if (rsi < 30) return "#00ff88";
+  if (rsi > 70) return "#ff4757";
+  return "#ffd166";
+};
+const getRsiLabel = (rsi) => {
+  if (!rsi) return "—";
+  if (rsi < 30) return `${fmtNum(rsi,1)} OVERSOLD`;
+  if (rsi > 70) return `${fmtNum(rsi,1)} OVERBOUGHT`;
+  return `${fmtNum(rsi,1)} NEUTRAL`;
 };
 
-// ─── API Key: env var on Netlify, auto-injected in Claude sandbox ─────────────
-// ─── Finnhub real-time data ───────────────────────────────────────────────────
+// ─── Finnhub ──────────────────────────────────────────────────────────────────
 const getFinnhubKey = () =>
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_FINNHUB_KEY)
-    ? import.meta.env.VITE_FINNHUB_KEY
-    : null;
+    ? import.meta.env.VITE_FINNHUB_KEY : null;
 
 async function fetchOneTicker(ticker, key) {
   const base = "https://finnhub.io/api/v1";
-  const [quoteRes, metricRes, targetRes, profileRes] = await Promise.all([
+  const now  = Math.floor(Date.now() / 1000);
+  const from = now - 60 * 86400; // 60 days back for RSI
+  const earnFrom = new Date().toISOString().split("T")[0];
+  const earnTo   = new Date(Date.now() + 120 * 86400000).toISOString().split("T")[0];
+
+  const [quoteRes, metricRes, targetRes, profileRes, rsiRes, earnRes, srRes] = await Promise.all([
     fetch(`${base}/quote?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/metric?symbol=${ticker}&metric=all&token=${key}`),
     fetch(`${base}/stock/price-target?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/profile2?symbol=${ticker}&token=${key}`),
+    fetch(`${base}/indicator?symbol=${ticker}&resolution=D&from=${from}&to=${now}&indicator=rsi&indicatorFields={"timeperiod":14}&token=${key}`),
+    fetch(`${base}/calendar/earnings?symbol=${ticker}&from=${earnFrom}&to=${earnTo}&token=${key}`),
+    fetch(`${base}/scan/support-resistance?symbol=${ticker}&resolution=D&token=${key}`),
   ]);
-  const [quote, metric, target, profile] = await Promise.all([
+
+  const [quote, metric, target, profile, rsiData, earnData, srData] = await Promise.all([
     quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(),
+    rsiRes.json(), earnRes.json(), srRes.json(),
   ]);
 
   const cur    = quote.c;
@@ -53,6 +69,7 @@ async function fetchOneTicker(ticker, key) {
   if (!cur || cur === 0) return { ticker, error: "Invalid ticker or no data" };
   if (!high52 || !low52) return { ticker, error: "Insufficient market data" };
 
+  // ── Core fields
   const dayChangePct  = quote.dp ?? 0;
   const analystTarget = target?.targetMean ?? cur * 1.12;
   const name          = profile?.name || ticker;
@@ -61,6 +78,33 @@ async function fetchOneTicker(ticker, key) {
   const bestBuy       = high52 * 0.73;
   const upside        = ((analystTarget - cur) / cur * 100);
   const dn            = Math.abs(pct).toFixed(0);
+
+  // ── New fields from metric
+  const m       = metric?.metric || {};
+  const pe      = m.peTTM ?? m.peExclExtraTTM ?? null;
+  const eps     = m.epsNormalizedAnnual ?? m.epsTTM ?? null;
+  const ret52w  = m["52WeekPriceReturnDaily"] ?? null;
+  const vol10d  = m["10DayAverageTradingVolume"] ? m["10DayAverageTradingVolume"] * 1e6 : null;
+  const vol3m   = m["3MonthAverageTradingVolume"] ? m["3MonthAverageTradingVolume"] * 1e6 : null;
+
+  // ── RSI (last value)
+  const rsiArr = rsiData?.rsi || rsiData?.rsiValues || [];
+  const rsi = Array.isArray(rsiArr) && rsiArr.length > 0 ? rsiArr[rsiArr.length - 1] : null;
+
+  // ── Earnings date
+  let nextEarnings = null;
+  const earnList = earnData?.earningsCalendar || [];
+  if (earnList.length > 0) {
+    const sorted = earnList
+      .filter(e => e.date >= earnFrom)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    nextEarnings = sorted[0]?.date ?? null;
+  }
+
+  // ── Support & Resistance
+  const levels   = srData?.levels || [];
+  const support  = levels.filter(l => l < cur).sort((a,b) => b - a)[0] ?? null;
+  const resistance = levels.filter(l => l > cur).sort((a,b) => a - b)[0] ?? null;
 
   const strategy = {
     "DEEP CORRECTION": `Down ${dn}% from high. Exceeds the 27% "Best Buy" buffer — high value zone.`,
@@ -74,6 +118,8 @@ async function fetchOneTicker(ticker, key) {
     ticker, name, price: cur, high52, low52,
     pct, upside, dayChangePct,
     target: analystTarget, bestBuy, status, strategy,
+    pe, eps, ret52w, vol10d, vol3m,
+    rsi, nextEarnings, support, resistance,
     updatedAt: Date.now(),
   };
 }
@@ -82,7 +128,6 @@ async function fetchAllStocks(tickers) {
   if (!tickers.length) return {};
   const key = getFinnhubKey();
   if (!key) throw new Error("No Finnhub API key. Set VITE_FINNHUB_KEY in Netlify environment variables.");
-
   const settled = await Promise.allSettled(tickers.map(t => fetchOneTicker(t, key)));
   const results = {};
   settled.forEach((res, i) => {
@@ -91,18 +136,29 @@ async function fetchAllStocks(tickers) {
   return results;
 }
 
-// ─── DataCell ─────────────────────────────────────────────────────────────────
-function DataCell({ label, value, color }) {
+// ─── Sub-components ───────────────────────────────────────────────────────────
+function DataCell({ label, value, color, small }) {
   return (
     <div style={{ display:"flex", flexDirection:"column", gap:"3px" }}>
-      <div style={{ fontSize:"7px", color:"#264426", letterSpacing:"1.5px" }}>{label}</div>
-      <div style={{ fontSize:"13px", fontWeight:"bold", color: color || "#c8d8c8" }}>{value}</div>
+      <div style={{ fontSize:"7px", color:"#88aa88", letterSpacing:"1.5px" }}>{label}</div>
+      <div style={{ fontSize: small ? "11px" : "13px", fontWeight:"bold", color: color || "#c8d8c8" }}>{value}</div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }) {
+  return (
+    <div style={{ fontSize:"7px", color:"#335533", letterSpacing:"2px", textTransform:"uppercase",
+      borderBottom:"1px solid #0d1a0d", paddingBottom:"4px", marginBottom:"6px" }}>
+      {children}
     </div>
   );
 }
 
 // ─── StockCard ────────────────────────────────────────────────────────────────
 function StockCard({ data, onRemove }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (!data || data.loading) return (
     <div style={S.card}>
       <div style={S.loadBox}>
@@ -113,7 +169,7 @@ function StockCard({ data, onRemove }) {
   );
 
   if (data.error) return (
-    <div style={{ ...S.card, borderColor:"#3a1515" }} className="card">
+    <div style={{ ...S.card, borderColor:"#ff4757", boxShadow:"0 0 16px rgba(255,71,87,0.3)" }} className="card">
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
         <div>
           <div style={{ fontSize:"20px", fontWeight:900, color:"#ff4757", letterSpacing:"2px" }}>{data.ticker}</div>
@@ -128,8 +184,9 @@ function StockCard({ data, onRemove }) {
   const barPct = Math.min(98, Math.max(2, ((data.price - data.low52) / (data.high52 - data.low52)) * 100));
 
   return (
-    <div style={{ ...S.card, borderColor: cfg.border }} className="card">
+    <div style={{ ...S.card, borderColor: cfg.border, boxShadow: `0 0 16px ${cfg.border}55` }} className="card">
 
+      {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div>
           <div style={{ fontSize:"20px", fontWeight:900, color:"#e8f8e8", letterSpacing:"2px" }}>{data.ticker}</div>
@@ -141,6 +198,7 @@ function StockCard({ data, onRemove }) {
         </div>
       </div>
 
+      {/* Price row */}
       <div style={{ display:"flex", alignItems:"baseline", gap:"10px", flexWrap:"wrap" }}>
         <div style={{ fontSize:"24px", fontWeight:900, color:"#c8d8c8" }}>{fmt(data.price)}</div>
         <div style={{ fontSize:"11px", color: data.dayChangePct >= 0 ? "#00ff88" : "#ff4757" }}>
@@ -151,6 +209,7 @@ function StockCard({ data, onRemove }) {
         </div>
       </div>
 
+      {/* Range bar */}
       <div>
         <div style={S.barTrack}>
           <div style={{ ...S.barFill, width:`${barPct}%`, background:cfg.color }} />
@@ -162,13 +221,55 @@ function StockCard({ data, onRemove }) {
         </div>
       </div>
 
+      {/* Core data grid */}
       <div style={S.dataGrid}>
-        <DataCell label="BEST BUY TARGET"  value={fmt(data.bestBuy)}             color="#00ff88" />
-        <DataCell label="ANALYST TARGET"   value={fmt(data.target)} />
-        <DataCell label="UPSIDE TO TARGET" value={`${data.upside?.toFixed(1)}%`} color={data.upside >= 0 ? "#00ff88" : "#ff4757"} />
-        <DataCell label="% FROM HIGH"      value={`${data.pct?.toFixed(2)}%`}    color={cfg.color} />
+        <SectionLabel>Buy Zone Analysis</SectionLabel>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
+          <DataCell label="BEST BUY TARGET"  value={fmt(data.bestBuy)}             color="#00ff88" />
+          <DataCell label="ANALYST TARGET"   value={fmt(data.target)} />
+          <DataCell label="UPSIDE TO TARGET" value={`${data.upside?.toFixed(1)}%`} color={data.upside >= 0 ? "#00ff88" : "#ff4757"} />
+          <DataCell label="% FROM HIGH"      value={`${data.pct?.toFixed(2)}%`}    color={cfg.color} />
+        </div>
       </div>
 
+      {/* RSI */}
+      <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
+        <SectionLabel>Momentum</SectionLabel>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
+          <DataCell label="RSI (14 DAY)"     value={getRsiLabel(data.rsi)}          color={getRsiColor(data.rsi)} />
+          <DataCell label="52W RETURN"       value={data.ret52w != null ? `${Number(data.ret52w).toFixed(1)}%` : "—"} color={data.ret52w >= 0 ? "#00ff88" : "#ff4757"} />
+        </div>
+      </div>
+
+      {/* Fundamentals */}
+      <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
+        <SectionLabel>Fundamentals</SectionLabel>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
+          <DataCell label="P/E RATIO"        value={data.pe != null ? fmtNum(data.pe, 1) : "—"} />
+          <DataCell label="EPS"              value={data.eps != null ? fmt(data.eps) : "—"} />
+        </div>
+      </div>
+
+      {/* Volume */}
+      <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
+        <SectionLabel>Volume</SectionLabel>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
+          <DataCell label="10 DAY AVG VOL"   value={fmtVol(data.vol10d)} small />
+          <DataCell label="3 MONTH AVG VOL"  value={fmtVol(data.vol3m)}  small />
+        </div>
+      </div>
+
+      {/* Support & Resistance + Earnings */}
+      <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
+        <SectionLabel>Levels & Catalyst</SectionLabel>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px" }}>
+          <DataCell label="SUPPORT"          value={data.support    ? fmt(data.support)    : "—"} color="#00ff88" small />
+          <DataCell label="RESISTANCE"       value={data.resistance ? fmt(data.resistance) : "—"} color="#ff4757" small />
+          <DataCell label="NEXT EARNINGS"    value={data.nextEarnings ? new Date(data.nextEarnings).toLocaleDateString("en-GB", { day:"numeric", month:"short" }) : "—"} color="#ffd166" small />
+        </div>
+      </div>
+
+      {/* Strategy */}
       <div style={S.stratBox}>
         <span style={{ color:"#00ff88", fontWeight:"bold", letterSpacing:"2px", fontSize:"9px" }}>STRATEGY </span>
         <span style={{ color:"#778877", fontSize:"10px" }}>{data.strategy}</span>
@@ -200,7 +301,6 @@ export default function App() {
 
   const refreshMs = REFRESH_OPTIONS[refreshIdx].ms;
 
-  // ── Core fetch ───────────────────────────────────────────────────────────────
   const doFetch = useCallback(async (tickers) => {
     if (!tickers.length || isRefreshing) return;
     setIsRefreshing(true);
@@ -223,7 +323,6 @@ export default function App() {
     }
   }, [isRefreshing]);
 
-  // ── Scheduler ────────────────────────────────────────────────────────────────
   const schedule = useCallback((interval) => {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     nextRefreshAt.current = Date.now() + interval;
@@ -234,11 +333,9 @@ export default function App() {
     }, interval);
   }, [doFetch]);
 
-  // Countdown tick
   useEffect(() => {
     const t = setInterval(() => {
-      if (nextRefreshAt.current)
-        setCountdown(Math.max(0, nextRefreshAt.current - Date.now()));
+      if (nextRefreshAt.current) setCountdown(Math.max(0, nextRefreshAt.current - Date.now()));
     }, 1000);
     return () => clearInterval(t);
   }, []);
@@ -248,7 +345,6 @@ export default function App() {
     return () => { if (pollTimer.current) clearTimeout(pollTimer.current); };
   }, [refreshMs]); // eslint-disable-line
 
-  // ── Refresh Now ──────────────────────────────────────────────────────────────
   const refreshNow = useCallback(async () => {
     const list = watchlistRef.current;
     if (!list.length || isRefreshing) return;
@@ -256,16 +352,12 @@ export default function App() {
     await doFetch(list);
   }, [isRefreshing, doFetch, schedule, refreshMs]);
 
-  // ── Add tickers ──────────────────────────────────────────────────────────────
   const addTickers = useCallback(async () => {
     const tokens = inputVal.split(/[,\s]+/)
       .map(t => t.trim().toUpperCase().replace(/[^A-Z0-9.^-]/g, ""))
       .filter(Boolean);
     const newOnes = tokens.filter(t => t && !watchlistRef.current.includes(t));
-    if (!newOnes.length) {
-      setInputError(tokens.length ? "Already tracking those tickers" : "Enter a ticker symbol");
-      return;
-    }
+    if (!newOnes.length) { setInputError(tokens.length ? "Already tracking those tickers" : "Enter a ticker symbol"); return; }
     setInputError(""); setInputVal("");
     setWatchlist(prev => [...prev, ...newOnes]);
     setStockData(prev => ({ ...prev, ...Object.fromEntries(newOnes.map(t => [t, { ticker: t, loading: true }])) }));
@@ -297,18 +389,13 @@ export default function App() {
           </div>
         </div>
 
-        {/* REFRESH NOW */}
-        <button
-          className="rnBtn"
+        <button className="rnBtn"
           style={{ ...S.rnBtn, ...(isRefreshing || !watchlist.length ? S.rnBtnOff : {}) }}
-          onClick={refreshNow}
-          disabled={isRefreshing || !watchlist.length}
-        >
+          onClick={refreshNow} disabled={isRefreshing || !watchlist.length}>
           <span className={isRefreshing ? "spin" : ""} style={{ display:"inline-block" }}>↺</span>
           <span style={{ marginLeft:"8px" }}>{isRefreshing ? "REFRESHING…" : "REFRESH NOW"}</span>
         </button>
 
-        {/* Countdown + interval */}
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"6px" }}>
           <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
             <div className={isRefreshing ? "pulse" : watchlist.length ? "pulse-slow" : ""}
@@ -354,18 +441,13 @@ export default function App() {
       <div style={{ display:"flex", alignItems:"center", gap:"10px", padding:"12px 20px", borderBottom:"1px solid #0d1a0d", flexWrap:"wrap" }}>
         <div style={{ display:"flex", alignItems:"center", background:"#09120a", border:"1px solid #183018", borderRadius:"4px", padding:"0 12px", flex:1, maxWidth:"400px" }}>
           <span style={{ color:"#00ff88", fontSize:"15px", fontWeight:"bold", marginRight:"6px" }}>$</span>
-          <input
-            style={S.inp}
-            value={inputVal}
+          <input style={S.inp} value={inputVal}
             onChange={e => { setInputVal(e.target.value.toUpperCase()); setInputError(""); }}
             onKeyDown={e => e.key === "Enter" && addTickers()}
             placeholder="AAPL  or  AAPL, TSLA, NVDA, MSFT…"
-            disabled={isRefreshing}
-          />
+            disabled={isRefreshing} />
         </div>
-        <button className="addBtn" style={S.addBtn} onClick={addTickers} disabled={isRefreshing}>
-          + ADD
-        </button>
+        <button className="addBtn" style={S.addBtn} onClick={addTickers} disabled={isRefreshing}>+ ADD</button>
       </div>
       {inputError && <div style={{ color:"#ff4757", fontSize:"10px", padding:"5px 20px", background:"rgba(255,71,87,0.05)" }}>⚠ {inputError}</div>}
 
@@ -395,7 +477,6 @@ export default function App() {
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
 const S = {
   root:    { minHeight:"100vh", background:"#070b09", color:"#c8d8c8", fontFamily:"'Courier New',monospace" },
   hdr:     { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 20px", borderBottom:"1px solid #0d1a0d", background:"rgba(0,255,136,0.015)", flexWrap:"wrap", gap:"12px" },
@@ -404,8 +485,8 @@ const S = {
   intBtn:  { background:"transparent", border:"1px solid #1a2a1a", color:"#264426", padding:"3px 7px", fontFamily:"'Courier New',monospace", fontSize:"8px", letterSpacing:"1px", cursor:"pointer", borderRadius:"3px" },
   inp:     { background:"transparent", border:"none", outline:"none", color:"#00ff88", fontSize:"12px", fontFamily:"'Courier New',monospace", letterSpacing:"2px", padding:"11px 0", width:"100%" },
   addBtn:  { background:"transparent", border:"1px solid #00ff88", color:"#00ff88", padding:"10px 16px", fontFamily:"'Courier New',monospace", fontSize:"11px", letterSpacing:"2px", cursor:"pointer", borderRadius:"4px", fontWeight:"bold" },
-  grid:    { display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))", gap:"14px", padding:"18px 20px" },
-  card:    { background:"#090f0a", border:"1px solid #1a2a1a", borderRadius:"6px", padding:"16px", display:"flex", flexDirection:"column", gap:"11px", transition:"border-color 0.3s" },
+  grid:    { display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))", gap:"14px", padding:"18px 20px" },
+  card:    { background:"#090f0a", border:"2px solid #1a2a1a", borderRadius:"6px", padding:"16px", display:"flex", flexDirection:"column", gap:"10px", transition:"border-color 0.3s" },
   loadBox: { display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 0" },
   badge:   { padding:"3px 8px", borderRadius:"3px", fontSize:"8px", fontWeight:"bold", letterSpacing:"1px", border:"1px solid", whiteSpace:"nowrap" },
   pctChip: { fontSize:"10px", padding:"2px 7px", borderRadius:"3px", border:"1px solid", letterSpacing:"1px" },
@@ -413,7 +494,7 @@ const S = {
   barTrack:{ height:"4px", background:"#0d1a0d", borderRadius:"2px", position:"relative", overflow:"visible" },
   barFill: { height:"100%", borderRadius:"2px", transition:"width 0.8s ease" },
   barDot:  { position:"absolute", top:"-3px", width:"10px", height:"10px", borderRadius:"50%", transform:"translateX(-50%)", border:"2px solid #090f0a" },
-  dataGrid:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" },
+  dataGrid:{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px", display:"flex", flexDirection:"column", gap:"6px" },
   stratBox:{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"8px 10px", lineHeight:"1.6" },
   suggBtn: { background:"transparent", border:"1px solid #183018", color:"#264426", padding:"5px 10px", fontFamily:"'Courier New',monospace", fontSize:"9px", letterSpacing:"2px", cursor:"pointer", borderRadius:"3px" },
 };
