@@ -36,6 +36,139 @@ const getRsiLabel = (rsi) => {
   return `${fmtNum(rsi,1)} NEUTRAL`;
 };
 
+// ─── Fear & Greed Index ───────────────────────────────────────────────────────
+async function fetchFearGreed() {
+  try {
+    const res = await fetch("https://fear-and-greed-index.p.rapidapi.com/v1/fgi", {
+      headers: {
+        "x-rapidapi-host": "fear-and-greed-index.p.rapidapi.com",
+        "x-rapidapi-key": "placeholder", // public endpoint fallback below
+      }
+    });
+    if (res.ok) {
+      const d = await res.json();
+      return d?.fgi?.now?.value ?? null;
+    }
+  } catch {}
+  // Fallback: CNN Fear & Greed via allorigins proxy
+  try {
+    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent("https://production.dataviz.cnn.io/index/fearandgreed/graphdata")}`;
+    const res = await fetch(proxy, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const d = await res.json();
+      return d?.fear_and_greed?.score ?? null;
+    }
+  } catch {}
+  return null;
+}
+
+function getFearGreedLabel(score) {
+  if (score === null) return { label: "Unknown", color: "#c8d8c8", emoji: "?" };
+  if (score <= 25) return { label: "EXTREME FEAR",  color: "#00ff88", emoji: "😱" };
+  if (score <= 45) return { label: "FEAR",          color: "#7dff6b", emoji: "😰" };
+  if (score <= 55) return { label: "NEUTRAL",       color: "#ffd166", emoji: "😐" };
+  if (score <= 75) return { label: "GREED",         color: "#ff9f43", emoji: "🤑" };
+  return                   { label: "EXTREME GREED", color: "#ff4757", emoji: "🔥" };
+}
+
+// ─── Decision Engine ──────────────────────────────────────────────────────────
+function getDecision(stock, fearGreedScore) {
+  const { pct, rsi, upside, pe, vol10d, vol3m, nextEarnings, ret52w, high52, low52, price } = stock;
+  const beta = stock.beta ?? 1;
+
+  // Beta-adjusted buy zone thresholds
+  // Higher beta stocks need bigger drops to be considered value
+  const buyZoneThreshold   = Math.min(-(10 + beta * 5), -15);  // e.g. beta 1 = -15%, beta 2 = -20%
+  const strongBuyThreshold = Math.min(-(20 + beta * 5), -25);  // e.g. beta 1 = -25%, beta 2 = -30%
+  const deepBuyThreshold   = Math.min(-(30 + beta * 5), -35);  // e.g. beta 1 = -35%, beta 2 = -40%
+
+  let score = 0;
+  const signals = [];
+
+  // ── Signal 1: Price vs 52W High (beta-adjusted, max 30pts)
+  if (pct <= deepBuyThreshold) {
+    score += 30;
+    signals.push({ icon: "✅", text: `Down ${Math.abs(pct).toFixed(0)}% — deep value zone for this stock` });
+  } else if (pct <= strongBuyThreshold) {
+    score += 22;
+    signals.push({ icon: "✅", text: `Down ${Math.abs(pct).toFixed(0)}% — strong buy territory` });
+  } else if (pct <= buyZoneThreshold) {
+    score += 14;
+    signals.push({ icon: "🟡", text: `Down ${Math.abs(pct).toFixed(0)}% — entering buy zone` });
+  } else if (pct <= -5) {
+    score += 5;
+    signals.push({ icon: "🟡", text: `Down ${Math.abs(pct).toFixed(0)}% — minor pullback, not yet a buy zone` });
+  } else {
+    score -= 10;
+    signals.push({ icon: "❌", text: `Near 52W high — expensive entry point` });
+  }
+
+  // ── Signal 2: RSI (max 20pts)
+  if (rsi !== null) {
+    if (rsi < 25) { score += 20; signals.push({ icon: "✅", text: `RSI ${rsi.toFixed(0)} — extremely oversold, high reversal potential` }); }
+    else if (rsi < 35) { score += 14; signals.push({ icon: "✅", text: `RSI ${rsi.toFixed(0)} — oversold territory` }); }
+    else if (rsi < 50) { score += 6;  signals.push({ icon: "🟡", text: `RSI ${rsi.toFixed(0)} — neutral, leaning bearish` }); }
+    else if (rsi < 65) { score += 0;  signals.push({ icon: "🟡", text: `RSI ${rsi.toFixed(0)} — neutral` }); }
+    else if (rsi < 75) { score -= 8;  signals.push({ icon: "❌", text: `RSI ${rsi.toFixed(0)} — overbought, wait for pullback` }); }
+    else               { score -= 15; signals.push({ icon: "❌", text: `RSI ${rsi.toFixed(0)} — extremely overbought` }); }
+  }
+
+  // ── Signal 3: Fear & Greed (max 20pts)
+  if (fearGreedScore !== null) {
+    if (fearGreedScore <= 25)      { score += 20; signals.push({ icon: "✅", text: `Market in Extreme Fear (${fearGreedScore}) — historically the best time to buy` }); }
+    else if (fearGreedScore <= 40) { score += 12; signals.push({ icon: "✅", text: `Market in Fear (${fearGreedScore}) — favourable buying conditions` }); }
+    else if (fearGreedScore <= 55) { score += 4;  signals.push({ icon: "🟡", text: `Market Neutral (${fearGreedScore}) — no strong tailwind` }); }
+    else if (fearGreedScore <= 70) { score -= 6;  signals.push({ icon: "🟡", text: `Market in Greed (${fearGreedScore}) — be selective` }); }
+    else                           { score -= 14; signals.push({ icon: "❌", text: `Market in Extreme Greed (${fearGreedScore}) — high risk of correction` }); }
+  }
+
+  // ── Signal 4: Analyst Upside (max 15pts)
+  if (upside >= 40)      { score += 15; signals.push({ icon: "✅", text: `${upside.toFixed(0)}% analyst upside — very attractive target` }); }
+  else if (upside >= 20) { score += 10; signals.push({ icon: "✅", text: `${upside.toFixed(0)}% analyst upside — solid target` }); }
+  else if (upside >= 10) { score += 5;  signals.push({ icon: "🟡", text: `${upside.toFixed(0)}% analyst upside — modest target` }); }
+  else if (upside >= 0)  { score += 0;  signals.push({ icon: "🟡", text: `${upside.toFixed(0)}% analyst upside — limited room` }); }
+  else                   { score -= 8;  signals.push({ icon: "❌", text: `Analyst target below current price — bearish consensus` }); }
+
+  // ── Signal 5: Volume trend (smart money, max 10pts)
+  if (vol10d && vol3m) {
+    const volRatio = vol10d / vol3m;
+    if (volRatio >= 1.5)      { score += 10; signals.push({ icon: "✅", text: `Volume 50%+ above avg — strong institutional interest` }); }
+    else if (volRatio >= 1.2) { score += 6;  signals.push({ icon: "✅", text: `Volume above avg — increased buying activity` }); }
+    else if (volRatio >= 0.8) { score += 0;  signals.push({ icon: "🟡", text: `Normal volume — no unusual activity` }); }
+    else                      { score -= 5;  signals.push({ icon: "❌", text: `Volume below avg — low conviction` }); }
+  }
+
+  // ── Signal 6: Earnings risk (max -15pts penalty)
+  if (nextEarnings) {
+    const daysToEarn = Math.floor((new Date(nextEarnings) - new Date()) / 86400000);
+    if (daysToEarn >= 0 && daysToEarn <= 7)  { score -= 15; signals.push({ icon: "⚠️", text: `Earnings in ${daysToEarn} days — HIGH RISK, wait until after` }); }
+    else if (daysToEarn <= 14)               { score -= 8;  signals.push({ icon: "⚠️", text: `Earnings in ${daysToEarn} days — consider waiting` }); }
+    else if (daysToEarn <= 30)               { score -= 2;  signals.push({ icon: "🟡", text: `Earnings in ${daysToEarn} days — factor into position size` }); }
+    else                                     { score += 2;  signals.push({ icon: "✅", text: `Earnings not imminent (${daysToEarn} days) — lower event risk` }); }
+  }
+
+  // ── Verdict
+  let verdict, verdictColor, verdictBg, verdictBorder, advice;
+  if (score >= 55) {
+    verdict = "BUY NOW"; verdictColor = "#00ff88"; verdictBg = "rgba(0,255,136,0.12)"; verdictBorder = "#00ff88";
+    advice = "Multiple signals aligned. Consider scaling in with a staged entry — buy 1/3 now, add on further weakness.";
+  } else if (score >= 35) {
+    verdict = "ACCUMULATE"; verdictColor = "#7dff6b"; verdictBg = "rgba(125,255,107,0.1)"; verdictBorder = "#7dff6b";
+    advice = "Conditions broadly favourable. Start a small position and add more if the price dips further.";
+  } else if (score >= 15) {
+    verdict = "WATCH & WAIT"; verdictColor = "#ffd166"; verdictBg = "rgba(255,209,102,0.1)"; verdictBorder = "#ffd166";
+    advice = "Some signals positive but not enough aligned. Set a price alert and wait for a better entry.";
+  } else if (score >= 0) {
+    verdict = "WAIT FOR DIP"; verdictColor = "#ff9f43"; verdictBg = "rgba(255,159,67,0.1)"; verdictBorder = "#ff9f43";
+    advice = "Not in buy zone yet. Be patient — a better entry is likely available if you wait.";
+  } else {
+    verdict = "AVOID"; verdictColor = "#ff4757"; verdictBg = "rgba(255,71,87,0.1)"; verdictBorder = "#ff4757";
+    advice = "Multiple negative signals. High risk of further downside — stay out until conditions improve.";
+  }
+
+  return { verdict, verdictColor, verdictBg, verdictBorder, advice, signals, score };
+}
+
 // ─── Finnhub ──────────────────────────────────────────────────────────────────
 const getFinnhubKey = () =>
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_FINNHUB_KEY)
@@ -152,8 +285,8 @@ function SectionLabel({ children }) {
 }
 
 // ─── StockCard ────────────────────────────────────────────────────────────────
-function StockCard({ data, onRemove }) {
-  const [expanded, setExpanded] = useState(false);
+function StockCard({ data, onRemove, fearGreed }) {
+  const [showSignals, setShowSignals] = useState(false);
 
   if (!data || data.loading) return (
     <div style={S.card}>
@@ -277,6 +410,56 @@ function StockCard({ data, onRemove }) {
         </div>
       </div>
 
+      {/* ── DECISION ENGINE ── */}
+      {(() => {
+        const d = getDecision(data, fearGreed);
+        return (
+          <div style={{ border:`2px solid ${d.verdictBorder}`, borderRadius:"6px", overflow:"hidden",
+            boxShadow:`0 0 20px ${d.verdictBorder}44` }}>
+            {/* Verdict header */}
+            <div style={{ background:d.verdictBg, padding:"12px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <div style={{ fontSize:"8px", color:"#446644", letterSpacing:"2px", marginBottom:"4px" }}>AI DECISION ENGINE</div>
+                <div style={{ fontSize:"20px", fontWeight:900, color:d.verdictColor, letterSpacing:"3px" }}>
+                  {d.verdict === "BUY NOW"      ? "🟢 " :
+                   d.verdict === "ACCUMULATE"   ? "🟩 " :
+                   d.verdict === "WATCH & WAIT" ? "🟡 " :
+                   d.verdict === "WAIT FOR DIP" ? "🟠 " : "🔴 "}
+                  {d.verdict}
+                </div>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ fontSize:"8px", color:"#446644", letterSpacing:"1px" }}>SCORE</div>
+                <div style={{ fontSize:"24px", fontWeight:900, color:d.verdictColor }}>{d.score}</div>
+                <div style={{ fontSize:"7px", color:"#264426" }}>out of 95</div>
+              </div>
+            </div>
+            {/* Advice */}
+            <div style={{ background:"#060c06", padding:"10px 14px", borderTop:`1px solid ${d.verdictBorder}33` }}>
+              <div style={{ fontSize:"11px", color:"#c8d8c8", lineHeight:1.6 }}>{d.advice}</div>
+            </div>
+            {/* Signal toggle */}
+            <button onClick={() => setShowSignals(s => !s)}
+              style={{ width:"100%", background:"transparent", border:"none", borderTop:`1px solid ${d.verdictBorder}33`,
+                padding:"8px 14px", color:"#446644", fontFamily:"'Courier New',monospace", fontSize:"9px",
+                letterSpacing:"2px", cursor:"pointer", textAlign:"left" }}>
+              {showSignals ? "▲ HIDE SIGNALS" : "▼ SHOW SIGNALS"} ({d.signals.length})
+            </button>
+            {/* Signals list */}
+            {showSignals && (
+              <div style={{ background:"#050c05", padding:"10px 14px", display:"flex", flexDirection:"column", gap:"8px" }}>
+                {d.signals.map((sig, i) => (
+                  <div key={i} style={{ display:"flex", gap:"8px", alignItems:"flex-start" }}>
+                    <span style={{ fontSize:"12px", flexShrink:0 }}>{sig.icon}</span>
+                    <span style={{ fontSize:"10px", color:"#889988", lineHeight:1.5 }}>{sig.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Strategy */}
       <div style={S.stratBox}>
         <span style={{ color:"#00ff88", fontWeight:"bold", letterSpacing:"2px", fontSize:"9px" }}>STRATEGY </span>
@@ -301,6 +484,14 @@ export default function App() {
   const [lastPoll,     setLastPoll]     = useState(null);
   const [countdown,    setCountdown]    = useState(0);
   const [statusMsg,    setStatusMsg]    = useState("");
+  const [fearGreed,    setFearGreed]    = useState(null);
+
+  // Fetch Fear & Greed on mount and every hour
+  useEffect(() => {
+    fetchFearGreed().then(v => setFearGreed(v));
+    const t = setInterval(() => fetchFearGreed().then(v => setFearGreed(v)), 60 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
 
   const nextRefreshAt = useRef(null);
   const pollTimer     = useRef(null);
@@ -397,6 +588,20 @@ export default function App() {
           </div>
         </div>
 
+        {/* Fear & Greed */}
+        {fearGreed !== null && (() => {
+          const fg = getFearGreedLabel(fearGreed);
+          return (
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"3px",
+              background:"rgba(0,0,0,0.3)", border:`1px solid ${fg.color}`, borderRadius:"6px", padding:"8px 14px" }}>
+              <div style={{ fontSize:"8px", color:"#446644", letterSpacing:"2px" }}>FEAR & GREED</div>
+              <div style={{ fontSize:"22px", lineHeight:1 }}>{fg.emoji}</div>
+              <div style={{ fontSize:"16px", fontWeight:900, color:fg.color }}>{fearGreed}</div>
+              <div style={{ fontSize:"8px", color:fg.color, letterSpacing:"1px", fontWeight:"bold" }}>{fg.label}</div>
+            </div>
+          );
+        })()}
+
         <button className="rnBtn"
           style={{ ...S.rnBtn, ...(isRefreshing || !watchlist.length ? S.rnBtnOff : {}) }}
           onClick={refreshNow} disabled={isRefreshing || !watchlist.length}>
@@ -477,7 +682,7 @@ export default function App() {
       {watchlist.length > 0 && (
         <div style={S.grid} className="grid">
           {watchlist.map(t => (
-            <StockCard key={t} data={stockData[t] || { ticker: t, loading: true }} onRemove={removeTicker} />
+            <StockCard key={t} data={stockData[t] || { ticker: t, loading: true }} onRemove={removeTicker} fearGreed={fearGreed} />
           ))}
         </div>
       )}
