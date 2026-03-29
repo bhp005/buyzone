@@ -20,7 +20,11 @@ const getStatus = (p) =>
   p <= -27 ? "DEEP CORRECTION" : p <= -10 ? "CORRECTION" : p <= -5 ? "PULLBACK" : p < 0 ? "WATCH" : "HEALTHY";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-const fmt     = (n, dec=2) => (n != null && !isNaN(n) ? `$${Number(n).toFixed(dec)}` : "—");
+const fmt     = (n, dec=2, currency="USD") => {
+  if (n == null || isNaN(n)) return "—";
+  const sym = { USD:"$", GBP:"£", INR:"₹" }[currency] || "$";
+  return `${sym}${Number(n).toFixed(dec)}`;
+};
 const fmtNum  = (n, dec=2) => (n != null && !isNaN(n) ? Number(n).toFixed(dec) : "—");
 const fmtVol  = (n) => { if (!n) return "—"; if (n >= 1e6) return (n/1e6).toFixed(1)+"M"; if (n >= 1e3) return (n/1e3).toFixed(1)+"K"; return String(n); };
 const fmtTime = (ms) => { if (ms <= 0) return "00:00"; const m = Math.floor(ms/60000); const s = Math.floor((ms%60000)/1000); return `${m}:${String(s).padStart(2,"0")}`; };
@@ -28,7 +32,46 @@ const fmtTime = (ms) => { if (ms <= 0) return "00:00"; const m = Math.floor(ms/6
 const getRsiColor = (rsi) => { if (!rsi) return "#c8d8c8"; if (rsi < 30) return "#00ff88"; if (rsi > 70) return "#ff4757"; return "#ffd166"; };
 const getRsiLabel = (rsi) => { if (!rsi) return "—"; if (rsi < 30) return `${fmtNum(rsi,1)} OVERSOLD`; if (rsi > 70) return `${fmtNum(rsi,1)} OVERBOUGHT`; return `${fmtNum(rsi,1)} NEUTRAL`; };
 
-// ─── localStorage helpers ─────────────────────────────────────────────────────
+// ─── Exchanges ────────────────────────────────────────────────────────────────
+const EXCHANGES = {
+  US: {
+    id: "US", flag: "🇺🇸", label: "USA", sublabel: "NYSE / NASDAQ",
+    currency: "USD", symbol: "$",
+    suggestions: ["AAPL","TSLA","NVDA","MSFT","AMZN","META","GOOGL"],
+    placeholder: "AAPL, TSLA, NVDA…",
+    color: "#00ff88",
+  },
+  UK: {
+    id: "UK", flag: "🇬🇧", label: "London", sublabel: "LSE",
+    currency: "GBP", symbol: "£",
+    suggestions: ["AZN.L","SHEL.L","HSBA.L","ULVR.L","BP.L","GSK.L","RIO.L"],
+    placeholder: "AZN.L, SHEL.L, HSBA.L…",
+    color: "#4a9eff",
+    tip: "Add .L suffix — e.g. AZN.L for AstraZeneca",
+  },
+  IN: {
+    id: "IN", flag: "🇮🇳", label: "India", sublabel: "NSE / BSE",
+    currency: "INR", symbol: "₹",
+    suggestions: ["RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","WIPRO.NS","BAJFINANCE.NS"],
+    placeholder: "RELIANCE.NS, TCS.NS…",
+    color: "#ff9f43",
+    tip: "Add .NS for NSE or .BO for BSE — e.g. TCS.NS",
+  },
+};
+
+// Currency-aware formatter
+const fmtCurrency = (n, currency="USD", dec=2) => {
+  if (n == null || isNaN(n)) return "—";
+  const sym = { USD:"$", GBP:"£", INR:"₹" }[currency] || "$";
+  return `${sym}${Number(n).toFixed(dec)}`;
+};
+
+// Detect exchange from ticker suffix
+const getExchangeForTicker = (ticker) => {
+  if (ticker.endsWith(".L"))  return "UK";
+  if (ticker.endsWith(".NS") || ticker.endsWith(".BO")) return "IN";
+  return "US";
+};
 const LS = {
   get: (k, def) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch { return def; } },
   set: (k, v)  => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -516,9 +559,10 @@ function AlertPanel({ ticker, price, alerts, onSetAlert, onRemoveAlert }) {
 }
 
 // ─── StockCard ────────────────────────────────────────────────────────────────
-function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAlert }) {
+function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAlert, currency="USD" }) {
   const [showSignals,  setShowSignals]  = useState(false);
   const [showAlerts,   setShowAlerts]   = useState(false);
+  const fmtC = (n, dec=2) => fmt(n, dec, currency);
 
   if (!data || data.loading) return (
     <div style={S.card}>
@@ -570,7 +614,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
 
       {/* Price row */}
       <div style={{ display:"flex", alignItems:"baseline", gap:"10px", flexWrap:"wrap" }}>
-        <div style={{ fontSize:"24px", fontWeight:900, color:"#c8d8c8" }}>{fmt(data.price)}</div>
+        <div style={{ fontSize:"24px", fontWeight:900, color:"#c8d8c8" }}>{ fmtC(data.price)}</div>
         <div style={{ fontSize:"11px", color: data.dayChangePct >= 0 ? "#00ff88" : "#ff4757" }}>
           {data.dayChangePct >= 0 ? "▲" : "▼"} {Math.abs(data.dayChangePct).toFixed(2)}% today
         </div>
@@ -586,8 +630,8 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
           <div style={{ ...S.barDot, left:`${barPct}%`, background:cfg.color }} />
         </div>
         <div style={{ display:"flex", justifyContent:"space-between", fontSize:"10px", color:"#6aaa6a", marginTop:"6px", fontWeight:"600", letterSpacing:"1px" }}>
-          <span>52W LOW {fmt(data.low52)}</span>
-          <span>52W HIGH {fmt(data.high52)}</span>
+          <span>52W LOW {fmtC(data.low52)}</span>
+          <span>52W HIGH {fmtC(data.high52)}</span>
         </div>
       </div>
 
@@ -601,8 +645,8 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
       <div style={S.dataGrid}>
         <SectionLabel>Buy Zone Analysis</SectionLabel>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
-          <DataCell label="BEST BUY TARGET"  value={fmt(data.bestBuy)}             color="#00ff88" />
-          <DataCell label="ANALYST TARGET"   value={fmt(data.target)} />
+          <DataCell label="BEST BUY TARGET"  value={fmtC(data.bestBuy)}             color="#00ff88" />
+          <DataCell label="ANALYST TARGET"   value={fmtC(data.target)} />
           <DataCell label="UPSIDE TO TARGET" value={`${data.upside?.toFixed(1)}%`} color={data.upside >= 0 ? "#00ff88" : "#ff4757"} />
           <DataCell label="% FROM HIGH"      value={`${data.pct?.toFixed(2)}%`}    color={cfg.color} />
         </div>
@@ -622,7 +666,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
         <SectionLabel>Fundamentals</SectionLabel>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
           <DataCell label="P/E RATIO" value={data.pe  != null ? fmtNum(data.pe, 1) : "—"} />
-          <DataCell label="EPS"       value={data.eps != null ? fmt(data.eps)       : "—"} />
+          <DataCell label="EPS"       value={data.eps != null ? fmtC(data.eps)       : "—"} />
         </div>
       </div>
 
@@ -639,8 +683,8 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
       <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
         <SectionLabel>Levels & Catalyst</SectionLabel>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px" }}>
-          <DataCell label="SUPPORT"      value={data.support    ? fmt(data.support)    : "—"} color="#00ff88" small />
-          <DataCell label="RESISTANCE"   value={data.resistance ? fmt(data.resistance) : "—"} color="#ff4757" small />
+          <DataCell label="SUPPORT"      value={data.support    ? fmtC(data.support)    : "—"} color="#00ff88" small />
+          <DataCell label="RESISTANCE"   value={data.resistance ? fmtC(data.resistance) : "—"} color="#ff4757" small />
           <DataCell label="NEXT EARNINGS" value={data.nextEarnings ? new Date(data.nextEarnings).toLocaleDateString("en-GB",{day:"numeric",month:"short"}) : "—"} color="#ffd166" small />
         </div>
       </div>
@@ -748,7 +792,8 @@ function AlertHistory({ history, onClear }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   // ── State (all persisted to localStorage) ─────────────────────────────────
-  const [watchlist,    setWatchlist]    = useState(() => LS.get("bz_watchlist", []));
+  const [activeExchange, setActiveExchange] = useState(() => LS.get("bz_exchange", "US"));
+  const [watchlist,    setWatchlist]    = useState(() => LS.get("bz_watchlist_v2", { US:[], UK:[], IN:{} }));
   const [stockData,    setStockData]    = useState({});
   const [alerts,       setAlerts]       = useState(() => LS.get("bz_alerts", {}));
   const [alertHistory, setAlertHistory] = useState(() => LS.get("bz_history", []));
@@ -764,7 +809,8 @@ export default function App() {
   const [showHistory,  setShowHistory]  = useState(false);
 
   // ── Persist to localStorage ────────────────────────────────────────────────
-  useEffect(() => { LS.set("bz_watchlist",   watchlist);  }, [watchlist]);
+  useEffect(() => { LS.set("bz_watchlist_v2", watchlist);  }, [watchlist]);
+  useEffect(() => { LS.set("bz_exchange",    activeExchange); }, [activeExchange]);
   useEffect(() => { LS.set("bz_alerts",      alerts);     }, [alerts]);
   useEffect(() => { LS.set("bz_history",     alertHistory);}, [alertHistory]);
   useEffect(() => { LS.set("bz_refreshIdx",  refreshIdx); }, [refreshIdx]);
@@ -785,7 +831,8 @@ export default function App() {
   const nextRefreshAt = useRef(null);
   const pollTimer     = useRef(null);
   const watchlistRef  = useRef([]);
-  watchlistRef.current = watchlist;
+  const currentList   = watchlist[activeExchange] || [];
+  watchlistRef.current = currentList;
 
   // ── Alert checker ──────────────────────────────────────────────────────────
   const checkAlerts = useCallback((results, currentAlerts, currentFG) => {
@@ -893,12 +940,25 @@ export default function App() {
 
   // Auto-load saved watchlist on mount
   useEffect(() => {
-    if (watchlist.length) {
-      setStockData(Object.fromEntries(watchlist.map(t => [t, { ticker: t, loading: true }])));
-      doFetch(watchlist);
+    const list = watchlist[activeExchange] || [];
+    if (list.length) {
+      setStockData(Object.fromEntries(list.map(t => [t, { ticker: t, loading: true }])));
+      doFetch(list);
       schedule(refreshMs);
     }
   }, []); // eslint-disable-line
+
+  // Re-load when switching exchange
+  useEffect(() => {
+    const list = watchlist[activeExchange] || [];
+    if (list.length) {
+      const missing = list.filter(t => !stockData[t] || stockData[t].loading === undefined);
+      if (missing.length) {
+        setStockData(prev => ({ ...prev, ...Object.fromEntries(missing.map(t => [t,{ticker:t,loading:true}])) }));
+        doFetch(missing);
+      }
+    }
+  }, [activeExchange]); // eslint-disable-line
 
   useEffect(() => {
     if (watchlist.length) schedule(refreshMs);
@@ -916,20 +976,21 @@ export default function App() {
     const tokens = inputVal.split(/[,\s]+/)
       .map(t => t.trim().toUpperCase().replace(/[^A-Z0-9.^-]/g,""))
       .filter(Boolean);
-    const newOnes = tokens.filter(t => t && !watchlistRef.current.includes(t));
+    const currentList = watchlistRef.current;
+    const newOnes = tokens.filter(t => t && !currentList.includes(t));
     if (!newOnes.length) { setInputError(tokens.length ? "Already tracking those tickers" : "Enter a ticker symbol"); return; }
     setInputError(""); setInputVal("");
-    setWatchlist(prev => [...prev, ...newOnes]);
+    setWatchlist(prev => ({ ...prev, [activeExchange]: [...(prev[activeExchange]||[]), ...newOnes] }));
     setStockData(prev => ({ ...prev, ...Object.fromEntries(newOnes.map(t => [t,{ticker:t,loading:true}])) }));
     if (!pollTimer.current) schedule(refreshMs);
     await doFetch(newOnes);
-  }, [inputVal, doFetch, schedule, refreshMs]);
+  }, [inputVal, doFetch, schedule, refreshMs, activeExchange]);
 
   const removeTicker = useCallback((t) => {
-    setWatchlist(prev => prev.filter(x => x !== t));
+    setWatchlist(prev => ({ ...prev, [activeExchange]: (prev[activeExchange]||[]).filter(x => x !== t) }));
     setStockData(prev => { const n={...prev}; delete n[t]; return n; });
     setAlerts(prev => { const n={...prev}; delete n[t]; return n; });
-  }, []);
+  }, [activeExchange]);
 
   const onSetAlert = useCallback((ticker, alert) => {
     setAlerts(prev => ({ ...prev, [ticker]: [...(prev[ticker]||[]), alert] }));
@@ -942,9 +1003,11 @@ export default function App() {
   const totalActiveAlerts = Object.values(alerts).flat().filter(a => !a.triggered).length;
 
   const counts = Object.values(stockData).reduce((acc,s) => {
-    if (s?.status) acc[s.status] = (acc[s.status]||0)+1;
+    if (s?.status && currentList.includes(s.ticker)) acc[s.status] = (acc[s.status]||0)+1;
     return acc;
   }, {});
+
+  const exCfg = EXCHANGES[activeExchange] || EXCHANGES.US;
 
   const fg = getFearGreedLabel(fearGreed);
 
@@ -1035,8 +1098,44 @@ export default function App() {
         </div>
       </div>
 
-      {/* STATUS STRIP */}
-      {watchlist.length > 0 && (
+      {/* EXCHANGE SELECTOR */}
+      <div style={{ display:"flex", gap:"0", borderBottom:"1px solid #0d1a0d", background:"#060c06" }}>
+        {Object.values(EXCHANGES).map(ex => (
+          <button key={ex.id}
+            onClick={() => { setActiveExchange(ex.id); setInputVal(""); setInputError(""); }}
+            style={{
+              flex:1, background: activeExchange===ex.id ? `${ex.color}18` : "transparent",
+              border:"none", borderBottom: activeExchange===ex.id ? `2px solid ${ex.color}` : "2px solid transparent",
+              borderRight:"1px solid #0d1a0d",
+              color: activeExchange===ex.id ? ex.color : "#264426",
+              fontFamily:"'Courier New',monospace", fontSize:"11px", fontWeight: activeExchange===ex.id ? "bold" : "normal",
+              padding:"10px 8px", cursor:"pointer", transition:"all 0.2s",
+              display:"flex", flexDirection:"column", alignItems:"center", gap:"2px",
+            }}>
+            <span style={{ fontSize:"18px" }}>{ex.flag}</span>
+            <span style={{ letterSpacing:"1px" }}>{ex.label}</span>
+            <span style={{ fontSize:"7px", color: activeExchange===ex.id ? ex.color : "#1a3a1a", letterSpacing:"1px" }}>
+              {ex.sublabel}
+            </span>
+            {(watchlist[ex.id]||[]).length > 0 && (
+              <span style={{ fontSize:"7px", background: activeExchange===ex.id ? ex.color : "#1a3a1a",
+                color: activeExchange===ex.id ? "#030712" : "#264426",
+                borderRadius:"999px", padding:"1px 6px", marginTop:"2px" }}>
+                {(watchlist[ex.id]||[]).length} stocks
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* EXCHANGE TIP */}
+      {exCfg.tip && (
+        <div style={{ padding:"6px 20px", background:"rgba(255,159,67,0.06)", borderBottom:"1px solid #0d1a0d",
+          fontSize:"9px", color:"#ff9f43", letterSpacing:"1px" }}>
+          💡 {exCfg.tip}
+        </div>
+      )}
+      {currentList.length > 0 && (
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 20px", borderBottom:"1px solid #0d1a0d", background:"#060c06", flexWrap:"wrap", gap:"8px" }}>
           <div style={{ display:"flex", gap:"12px", flexWrap:"wrap" }}>
             {Object.entries(STATUS_CFG).map(([name,cfg]) => (
@@ -1046,21 +1145,22 @@ export default function App() {
             ))}
           </div>
           {statusMsg && !isRefreshing && <span style={{ fontSize:"9px", color:"#00ff88" }}>{statusMsg}</span>}
-          <span style={{ fontSize:"9px", color:"#264426" }}>{watchlist.length} TRACKED · {totalActiveAlerts} ALERTS</span>
+          <span style={{ fontSize:"9px", color:"#264426" }}>{currentList.length} TRACKED · {totalActiveAlerts} ALERTS</span>
         </div>
       )}
 
       {/* ADD BAR */}
       <div style={{ display:"flex", alignItems:"center", gap:"10px", padding:"12px 20px", borderBottom:"1px solid #0d1a0d", flexWrap:"wrap" }} className="add-bar">
-        <div style={{ display:"flex", alignItems:"center", background:"#09120a", border:"1px solid #183018", borderRadius:"4px", padding:"0 12px", flex:1, maxWidth:"400px" }}>
-          <span style={{ color:"#00ff88", fontSize:"15px", fontWeight:"bold", marginRight:"6px" }}>$</span>
-          <input style={S.inp} value={inputVal}
+        <div style={{ display:"flex", alignItems:"center", background:"#09120a", border:`1px solid ${exCfg.color}33`, borderRadius:"4px", padding:"0 12px", flex:1, maxWidth:"400px" }}>
+          <span style={{ color: exCfg.color, fontSize:"15px", fontWeight:"bold", marginRight:"6px" }}>{exCfg.flag}</span>
+          <input style={{ ...S.inp, color: exCfg.color }} value={inputVal}
             onChange={e => { setInputVal(e.target.value.toUpperCase()); setInputError(""); }}
             onKeyDown={e => e.key==="Enter" && addTickers()}
-            placeholder="AAPL  or  AAPL, TSLA, NVDA…"
+            placeholder={exCfg.placeholder}
             disabled={isRefreshing} />
         </div>
-        <button className="addBtn" style={S.addBtn} onClick={addTickers} disabled={isRefreshing}>+ ADD</button>
+        <button className="addBtn" style={{ ...S.addBtn, borderColor: exCfg.color, color: exCfg.color }}
+          onClick={addTickers} disabled={isRefreshing}>+ ADD</button>
       </div>
       {inputError && <div style={{ color:"#ff4757", fontSize:"10px", padding:"5px 20px", background:"rgba(255,71,87,0.05)" }}>⚠ {inputError}</div>}
 
@@ -1073,23 +1173,24 @@ export default function App() {
       )}
 
       {/* EMPTY STATE */}
-      {watchlist.length === 0 && (
+      {currentList.length === 0 && (
         <div style={{ display:"flex", flexDirection:"column", alignItems:"center", padding:"70px 24px", gap:"10px" }}>
-          <div style={{ fontSize:"40px", color:"#0d1f0d" }}>◈</div>
-          <div style={{ color:"#1a3a1a", fontSize:"13px", letterSpacing:"4px" }}>NO STOCKS TRACKED</div>
-          <div style={{ color:"#0d1f0d", fontSize:"10px", letterSpacing:"2px", marginTop:"4px" }}>Add tickers above, or click a suggestion:</div>
+          <div style={{ fontSize:"40px" }}>{exCfg.flag}</div>
+          <div style={{ color: exCfg.color, fontSize:"13px", letterSpacing:"4px", fontWeight:"bold" }}>{exCfg.label} — {exCfg.sublabel}</div>
+          <div style={{ color:"#1a3a1a", fontSize:"10px", letterSpacing:"2px", marginTop:"4px" }}>No stocks tracked. Add a ticker above or click a suggestion:</div>
           <div style={{ display:"flex", gap:"8px", marginTop:"8px", flexWrap:"wrap", justifyContent:"center" }} className="sugg-row">
-            {["AAPL","TSLA","NVDA","MSFT","AMZN","META","GOOGL"].map(t => (
-              <button key={t} className="suggBtn" style={S.suggBtn} onClick={() => setInputVal(p => p ? p+","+t : t)}>{t}</button>
+            {exCfg.suggestions.map(t => (
+              <button key={t} className="suggBtn" style={{ ...S.suggBtn, borderColor:`${exCfg.color}44`, color: exCfg.color }}
+                onClick={() => setInputVal(p => p ? p+","+t : t)}>{t}</button>
             ))}
           </div>
         </div>
       )}
 
       {/* GRID */}
-      {watchlist.length > 0 && (
+      {currentList.length > 0 && (
         <div style={S.grid} className="grid">
-          {watchlist.map(t => (
+          {currentList.map(t => (
             <StockCard key={t}
               data={stockData[t] || { ticker:t, loading:true }}
               onRemove={removeTicker}
@@ -1097,6 +1198,7 @@ export default function App() {
               alerts={alerts}
               onSetAlert={onSetAlert}
               onRemoveAlert={onRemoveAlert}
+              currency={exCfg.currency}
             />
           ))}
         </div>
