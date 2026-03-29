@@ -189,8 +189,11 @@ function StockCard({ data, onRemove }) {
           <div style={{ fontSize:"9px", color:"#446644", marginTop:"2px", maxWidth:"170px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{data.name}</div>
         </div>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"6px" }}>
-          <div style={{ ...S.badge, background:cfg.bg, color:cfg.color, borderColor:cfg.border }}>{cfg.icon} {data.status}</div>
-          <button style={{ ...S.iconBtn, color:"#2a4a2a" }} onClick={() => onRemove(data.ticker)}>✕ REMOVE</button>
+          <div style={{ ...S.badge, background:cfg.bg, color:cfg.color, borderColor:cfg.border }}>
+            <span style={{ color: ["DEEP CORRECTION","CORRECTION"].includes(data.status) ? "#00ff88" : ["PULLBACK"].includes(data.status) ? "#ffd166" : "#ff4757", marginRight:"5px" }}>{cfg.icon}</span>
+            {data.status}
+          </div>
+          <button style={{ ...S.iconBtn, color:"#ff4757", border:"1px solid #ff4757", borderRadius:"3px", padding:"3px 8px" }} onClick={() => onRemove(data.ticker)}>✕ REMOVE</button>
         </div>
       </div>
 
@@ -211,7 +214,7 @@ function StockCard({ data, onRemove }) {
           <div style={{ ...S.barFill, width:`${barPct}%`, background:cfg.color }} />
           <div style={{ ...S.barDot, left:`${barPct}%`, background:cfg.color }} />
         </div>
-        <div style={{ display:"flex", justifyContent:"space-between", fontSize:"8px", color:"#1a3a1a", marginTop:"4px" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", fontSize:"10px", color:"#6aaa6a", marginTop:"6px", fontWeight:"600", letterSpacing:"1px" }}>
           <span>52W LOW {fmt(data.low52)}</span>
           <span>52W HIGH {fmt(data.high52)}</span>
         </div>
@@ -484,7 +487,7 @@ const S = {
   grid:    { display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))", gap:"14px", padding:"18px 20px" },
   card:    { background:"#090f0a", border:"2px solid #1a2a1a", borderRadius:"6px", padding:"16px", display:"flex", flexDirection:"column", gap:"10px", transition:"border-color 0.3s" },
   loadBox: { display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 0" },
-  badge:   { padding:"3px 8px", borderRadius:"3px", fontSize:"8px", fontWeight:"bold", letterSpacing:"1px", border:"1px solid", whiteSpace:"nowrap" },
+  badge:   { padding:"6px 12px", borderRadius:"4px", fontSize:"11px", fontWeight:"bold", letterSpacing:"1.5px", border:"2px solid", whiteSpace:"nowrap" },
   pctChip: { fontSize:"10px", padding:"2px 7px", borderRadius:"3px", border:"1px solid", letterSpacing:"1px" },
   iconBtn: { background:"transparent", border:"none", cursor:"pointer", fontFamily:"'Courier New',monospace", fontSize:"9px", padding:"2px 4px", color:"#2a4a2a", letterSpacing:"1px" },
   barTrack:{ height:"4px", background:"#0d1a0d", borderRadius:"2px", position:"relative", overflow:"visible" },
