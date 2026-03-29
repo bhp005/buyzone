@@ -171,7 +171,7 @@ function StockCard({ data, onRemove }) {
           <div style={{ fontSize:"20px", fontWeight:900, color:"#ff4757", letterSpacing:"2px" }}>{data.ticker}</div>
           <div style={{ fontSize:"9px", color:"#ff4757", opacity:.5, marginTop:"4px" }}>⚠ {data.error}</div>
         </div>
-        <button style={S.iconBtn} onClick={() => onRemove(data.ticker)}>✕</button>
+        <button style={{ background:"transparent", border:"1px solid #ff4757", cursor:"pointer", fontFamily:"'Courier New',monospace", fontSize:"11px", padding:"4px 10px", color:"#ff4757", letterSpacing:"1px", borderRadius:"3px", fontWeight:"bold" }} onClick={() => onRemove(data.ticker)}>✕ REMOVE</button>
       </div>
     </div>
   );
@@ -189,9 +189,18 @@ function StockCard({ data, onRemove }) {
           <div style={{ fontSize:"9px", color:"#446644", marginTop:"2px", maxWidth:"170px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{data.name}</div>
         </div>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"6px" }}>
-          <div style={{ ...S.badge, background:cfg.bg, color:cfg.color, borderColor:cfg.border }}>
-            <span style={{ color: ["DEEP CORRECTION","CORRECTION"].includes(data.status) ? "#00ff88" : ["PULLBACK"].includes(data.status) ? "#ffd166" : "#ff4757", marginRight:"5px" }}>{cfg.icon}</span>
-            {data.status}
+          <div style={{ ...S.badge, background:cfg.bg, color:cfg.color, borderColor:cfg.border, display:"flex", alignItems:"center", gap:"6px" }}>
+            <span style={{
+              color: data.status === "DEEP CORRECTION" ? "#00ff88"
+                   : data.status === "CORRECTION"      ? "#7dff6b"
+                   : data.status === "PULLBACK"         ? "#ffd166"
+                   : data.status === "WATCH"            ? "#ff9f43"
+                   : "#ff4757",
+              fontSize:"14px",
+              fontWeight:"900",
+              lineHeight:1,
+            }}>{cfg.icon}</span>
+            <span>{data.status}</span>
           </div>
           <button style={{ ...S.iconBtn, color:"#ff4757", border:"1px solid #ff4757", borderRadius:"3px", padding:"3px 8px" }} onClick={() => onRemove(data.ticker)}>✕ REMOVE</button>
         </div>
@@ -489,7 +498,7 @@ const S = {
   loadBox: { display:"flex", flexDirection:"column", alignItems:"center", padding:"28px 0" },
   badge:   { padding:"6px 12px", borderRadius:"4px", fontSize:"11px", fontWeight:"bold", letterSpacing:"1.5px", border:"2px solid", whiteSpace:"nowrap" },
   pctChip: { fontSize:"10px", padding:"2px 7px", borderRadius:"3px", border:"1px solid", letterSpacing:"1px" },
-  iconBtn: { background:"transparent", border:"none", cursor:"pointer", fontFamily:"'Courier New',monospace", fontSize:"9px", padding:"2px 4px", color:"#2a4a2a", letterSpacing:"1px" },
+  iconBtn: { background:"transparent", border:"1px solid #ff4757", cursor:"pointer", fontFamily:"'Courier New',monospace", fontSize:"11px", padding:"4px 10px", color:"#ff4757", letterSpacing:"1px", borderRadius:"3px", fontWeight:"bold" },
   barTrack:{ height:"4px", background:"#0d1a0d", borderRadius:"2px", position:"relative", overflow:"visible" },
   barFill: { height:"100%", borderRadius:"2px", transition:"width 0.8s ease" },
   barDot:  { position:"absolute", top:"-3px", width:"10px", height:"10px", borderRadius:"50%", transform:"translateX(-50%)", border:"2px solid #090f0a" },
@@ -506,6 +515,7 @@ const css = `
   .rnBtn:hover:not(:disabled) { background:rgba(0,255,136,0.1)!important; box-shadow:0 0 28px rgba(0,255,136,0.35)!important; }
   .intBtn:hover { border-color:#446644!important; color:#446644!important; }
   .card:hover { box-shadow:0 0 18px rgba(0,255,136,0.05); }
+  .iconBtn:hover { background:rgba(255,71,87,0.15)!important; }
   .suggBtn:hover { border-color:#446644!important; color:#446644!important; }
   @keyframes spin { to { transform:rotate(360deg); } }
   .spin { display:inline-block; animation:spin 0.8s linear infinite; }
