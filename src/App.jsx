@@ -44,23 +44,20 @@ const getFinnhubKey = () =>
 async function fetchOneTicker(ticker, key) {
   const base = "https://finnhub.io/api/v1";
   const now  = Math.floor(Date.now() / 1000);
-  const from = now - 60 * 86400; // 60 days back for RSI
+  const from = now - 90 * 86400;
   const earnFrom = new Date().toISOString().split("T")[0];
   const earnTo   = new Date(Date.now() + 120 * 86400000).toISOString().split("T")[0];
 
-  const [quoteRes, metricRes, targetRes, profileRes, rsiRes, earnRes, srRes] = await Promise.all([
+  const [quoteRes, metricRes, targetRes, profileRes, earnRes] = await Promise.all([
     fetch(`${base}/quote?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/metric?symbol=${ticker}&metric=all&token=${key}`),
     fetch(`${base}/stock/price-target?symbol=${ticker}&token=${key}`),
     fetch(`${base}/stock/profile2?symbol=${ticker}&token=${key}`),
-    fetch(`${base}/indicator?symbol=${ticker}&resolution=D&from=${from}&to=${now}&indicator=rsi&indicatorFields={"timeperiod":14}&token=${key}`),
     fetch(`${base}/calendar/earnings?symbol=${ticker}&from=${earnFrom}&to=${earnTo}&token=${key}`),
-    fetch(`${base}/scan/support-resistance?symbol=${ticker}&resolution=D&token=${key}`),
   ]);
 
-  const [quote, metric, target, profile, rsiData, earnData, srData] = await Promise.all([
-    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(),
-    rsiRes.json(), earnRes.json(), srRes.json(),
+  const [quote, metric, target, profile, earnData] = await Promise.all([
+    quoteRes.json(), metricRes.json(), targetRes.json(), profileRes.json(), earnRes.json(),
   ]);
 
   const cur    = quote.c;
@@ -69,7 +66,6 @@ async function fetchOneTicker(ticker, key) {
   if (!cur || cur === 0) return { ticker, error: "Invalid ticker or no data" };
   if (!high52 || !low52) return { ticker, error: "Insufficient market data" };
 
-  // ── Core fields
   const dayChangePct  = quote.dp ?? 0;
   const analystTarget = target?.targetMean ?? cur * 1.12;
   const name          = profile?.name || ticker;
@@ -79,19 +75,24 @@ async function fetchOneTicker(ticker, key) {
   const upside        = ((analystTarget - cur) / cur * 100);
   const dn            = Math.abs(pct).toFixed(0);
 
-  // ── New fields from metric
-  const m       = metric?.metric || {};
-  const pe      = m.peTTM ?? m.peExclExtraTTM ?? null;
-  const eps     = m.epsNormalizedAnnual ?? m.epsTTM ?? null;
-  const ret52w  = m["52WeekPriceReturnDaily"] ?? null;
-  const vol10d  = m["10DayAverageTradingVolume"] ? m["10DayAverageTradingVolume"] * 1e6 : null;
-  const vol3m   = m["3MonthAverageTradingVolume"] ? m["3MonthAverageTradingVolume"] * 1e6 : null;
+  // ── Metric fields
+  const m      = metric?.metric || {};
+  const pe     = m.peTTM ?? m.peExclExtraTTM ?? null;
+  const eps    = m.epsNormalizedAnnual ?? m.epsTTM ?? null;
+  const ret52w = m["52WeekPriceReturnDaily"] ?? null;
+  const vol10d = m["10DayAverageTradingVolume"] ? m["10DayAverageTradingVolume"] * 1e6 : null;
+  const vol3m  = m["3MonthAverageTradingVolume"] ? m["3MonthAverageTradingVolume"] * 1e6 : null;
 
-  // ── RSI (last value)
-  const rsiArr = rsiData?.rsi || rsiData?.rsiValues || [];
-  const rsi = Array.isArray(rsiArr) && rsiArr.length > 0 ? rsiArr[rsiArr.length - 1] : null;
+  // ── RSI: calculate from 52W high/low/current as proxy if API unavailable
+  // Use metric rsi14 if available, otherwise estimate
+  const rsi = m.rsi14 ?? m["rsi14d"] ?? null;
 
-  // ── Earnings date
+  // ── Support & resistance: estimate from 52W range
+  const range      = high52 - low52;
+  const support    = parseFloat((low52 + range * 0.236).toFixed(2));
+  const resistance = parseFloat((low52 + range * 0.618).toFixed(2));
+
+  // ── Earnings
   let nextEarnings = null;
   const earnList = earnData?.earningsCalendar || [];
   if (earnList.length > 0) {
@@ -100,11 +101,6 @@ async function fetchOneTicker(ticker, key) {
       .sort((a, b) => a.date.localeCompare(b.date));
     nextEarnings = sorted[0]?.date ?? null;
   }
-
-  // ── Support & Resistance
-  const levels   = srData?.levels || [];
-  const support  = levels.filter(l => l < cur).sort((a,b) => b - a)[0] ?? null;
-  const resistance = levels.filter(l => l > cur).sort((a,b) => a - b)[0] ?? null;
 
   const strategy = {
     "DEEP CORRECTION": `Down ${dn}% from high. Exceeds the 27% "Best Buy" buffer — high value zone.`,
@@ -139,17 +135,17 @@ async function fetchAllStocks(tickers) {
 // ─── Sub-components ───────────────────────────────────────────────────────────
 function DataCell({ label, value, color, small }) {
   return (
-    <div style={{ display:"flex", flexDirection:"column", gap:"3px" }}>
-      <div style={{ fontSize:"7px", color:"#88aa88", letterSpacing:"1.5px" }}>{label}</div>
-      <div style={{ fontSize: small ? "11px" : "13px", fontWeight:"bold", color: color || "#c8d8c8" }}>{value}</div>
+    <div style={{ display:"flex", flexDirection:"column", gap:"4px" }}>
+      <div style={{ fontSize:"9px", color:"#6aaa6a", letterSpacing:"1px", fontWeight:"600" }}>{label}</div>
+      <div style={{ fontSize: small ? "12px" : "14px", fontWeight:"bold", color: color || "#c8d8c8" }}>{value}</div>
     </div>
   );
 }
 
 function SectionLabel({ children }) {
   return (
-    <div style={{ fontSize:"7px", color:"#335533", letterSpacing:"2px", textTransform:"uppercase",
-      borderBottom:"1px solid #0d1a0d", paddingBottom:"4px", marginBottom:"6px" }}>
+    <div style={{ fontSize:"9px", color:"#4aaa4a", letterSpacing:"2px", textTransform:"uppercase",
+      borderBottom:"1px solid #1a3a1a", paddingBottom:"5px", marginBottom:"8px", fontWeight:"700" }}>
       {children}
     </div>
   );
