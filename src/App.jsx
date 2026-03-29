@@ -44,18 +44,18 @@ const EXCHANGES = {
   UK: {
     id: "UK", flag: "🇬🇧", label: "London", sublabel: "LSE",
     currency: "GBP", symbol: "£",
-    suggestions: ["AZN.L","SHEL.L","HSBA.L","ULVR.L","BP.L","GSK.L","RIO.L"],
-    placeholder: "AZN.L, SHEL.L, HSBA.L…",
+    suggestions: ["AZN","SHEL","HSBA","ULVR","BP","GSK","RIO"],
+    placeholder: "AZN, SHEL, HSBA… (.L added automatically)",
     color: "#4a9eff",
-    tip: "Add .L suffix — e.g. AZN.L for AstraZeneca",
+    tip: "Just type the ticker — .L is added automatically e.g. type AZN → searches AZN.L",
   },
   IN: {
     id: "IN", flag: "🇮🇳", label: "India", sublabel: "NSE / BSE",
     currency: "INR", symbol: "₹",
-    suggestions: ["RELIANCE.NS","TCS.NS","INFY.NS","HDFCBANK.NS","WIPRO.NS","BAJFINANCE.NS"],
-    placeholder: "RELIANCE.NS, TCS.NS…",
+    suggestions: ["RELIANCE","TCS","INFY","HDFCBANK","WIPRO","BAJFINANCE"],
+    placeholder: "TCS, RELIANCE, INFY… (.NS added automatically)",
     color: "#ff9f43",
-    tip: "Add .NS for NSE or .BO for BSE — e.g. TCS.NS",
+    tip: "Just type the ticker — .NS is added automatically e.g. type TCS → searches TCS.NS",
   },
 };
 
@@ -194,25 +194,36 @@ function getDecision(stock, fearGreedScore) {
   return { verdict, verdictColor, verdictBg, verdictBorder, advice, signals, score };
 }
 
-// ─── Finnhub fetch ────────────────────────────────────────────────────────────
+// ─── Ticker format converter for Finnhub ─────────────────────────────────────
+function toFinnhubTicker(ticker) {
+  if (ticker.endsWith(".L"))  return `LSE:${ticker.replace(".L", "")}`;
+  if (ticker.endsWith(".NS")) return `NSE:${ticker.replace(".NS", "")}`;
+  if (ticker.endsWith(".BO")) return `BSE:${ticker.replace(".BO", "")}`;
+  return ticker; // US stocks use ticker as-is
+}
+
+// Alpha Vantage uses Yahoo-style suffixes as-is (.L, .NS etc)
+function toAlphaTicker(ticker) {
+  return ticker; // AV accepts .L, .NS, .BO natively
+}
 const getFinnhubKey = () =>
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_FINNHUB_KEY)
     ? import.meta.env.VITE_FINNHUB_KEY : null;
 
 async function fetchOneTicker(ticker, key) {
   const base = "https://finnhub.io/api/v1";
-  const now      = Math.floor(Date.now() / 1000);
+  const fhTicker = toFinnhubTicker(ticker); // convert to Finnhub format
   const earnFrom = new Date().toISOString().split("T")[0];
   const earnTo   = new Date(Date.now() + 120 * 86400000).toISOString().split("T")[0];
   const alphaKey = (typeof import.meta !== "undefined" && import.meta.env?.VITE_ALPHA_KEY)
     ? import.meta.env.VITE_ALPHA_KEY : null;
 
   const [quoteRes, metricRes, targetRes, profileRes, earnRes] = await Promise.all([
-    fetch(`${base}/quote?symbol=${ticker}&token=${key}`),
-    fetch(`${base}/stock/metric?symbol=${ticker}&metric=all&token=${key}`),
-    fetch(`${base}/stock/price-target?symbol=${ticker}&token=${key}`),
-    fetch(`${base}/stock/profile2?symbol=${ticker}&token=${key}`),
-    fetch(`${base}/calendar/earnings?symbol=${ticker}&from=${earnFrom}&to=${earnTo}&token=${key}`),
+    fetch(`${base}/quote?symbol=${fhTicker}&token=${key}`),
+    fetch(`${base}/stock/metric?symbol=${fhTicker}&metric=all&token=${key}`),
+    fetch(`${base}/stock/price-target?symbol=${fhTicker}&token=${key}`),
+    fetch(`${base}/stock/profile2?symbol=${fhTicker}&token=${key}`),
+    fetch(`${base}/calendar/earnings?symbol=${fhTicker}&from=${earnFrom}&to=${earnTo}&token=${key}`),
   ]);
 
   const [quote, metric, target, profile, earnData] = await Promise.all([
@@ -264,7 +275,7 @@ async function fetchOneTicker(ticker, key) {
 
   if (alphaKey) {
     try {
-      const avUrl = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&outputsize=compact&apikey=${alphaKey}`;
+      const avUrl = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${toAlphaTicker(ticker)}&outputsize=compact&apikey=${alphaKey}`;
       const avRes = await fetch(avUrl, { signal: AbortSignal.timeout(8000) });
       if (avRes.ok) {
         const avData = await avRes.json();
@@ -973,8 +984,17 @@ export default function App() {
   }, [isRefreshing, doFetch, schedule, refreshMs]);
 
   const addTickers = useCallback(async () => {
+    const suffix = { UK: ".L", IN: ".NS", US: "" }[activeExchange] || "";
     const tokens = inputVal.split(/[,\s]+/)
-      .map(t => t.trim().toUpperCase().replace(/[^A-Z0-9.^-]/g,""))
+      .map(t => {
+        let ticker = t.trim().toUpperCase().replace(/[^A-Z0-9.^-]/g, "");
+        if (!ticker) return "";
+        // Auto-append suffix if not already present and not US
+        if (suffix && !ticker.endsWith(suffix) && !ticker.includes(".")) {
+          ticker = ticker + suffix;
+        }
+        return ticker;
+      })
       .filter(Boolean);
     const currentList = watchlistRef.current;
     const newOnes = tokens.filter(t => t && !currentList.includes(t));
