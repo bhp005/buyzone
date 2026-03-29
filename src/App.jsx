@@ -353,9 +353,10 @@ async function fetchOneTicker(ticker, key) {
     "HEALTHY":         `At or near 52W high. Expensive — avoid chasing, wait for a pullback.`,
   }[status];
 
-  // ── Candle data from Alpha Vantage (real) with simulation fallback
+  // ── Candle data: Alpha Vantage → Yahoo Finance → Simulation
   let closes = [], timestamps = [], chartIsReal = false;
 
+  // 1️⃣ Try Alpha Vantage first
   if (alphaKey) {
     try {
       const avUrl = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${toAlphaTicker(ticker)}&outputsize=compact&apikey=${alphaKey}`;
@@ -363,19 +364,44 @@ async function fetchOneTicker(ticker, key) {
       if (avRes.ok) {
         const avData = await avRes.json();
         const series = avData["Time Series (Daily)"];
-        if (series) {
+        if (series && !avData["Note"] && !avData["Information"]) {
           const entries = Object.entries(series)
             .sort(([a], [b]) => a.localeCompare(b))
-            .slice(-60); // last 60 trading days
-          closes     = entries.map(([, v]) => parseFloat(v["4. close"]));
-          timestamps = entries.map(([d]) => Math.floor(new Date(d).getTime() / 1000));
-          chartIsReal = closes.length >= 10;
+            .slice(-60);
+          const av_closes     = entries.map(([, v]) => parseFloat(v["4. close"]));
+          const av_timestamps = entries.map(([d]) => Math.floor(new Date(d).getTime() / 1000));
+          if (av_closes.length >= 10) {
+            closes = av_closes; timestamps = av_timestamps; chartIsReal = true;
+          }
         }
       }
-    } catch { /* fall through to simulation */ }
+    } catch { /* fall through to Yahoo */ }
   }
 
-  // Simulation fallback if Alpha Vantage fails or no key
+  // 2️⃣ Yahoo Finance fallback (free, no key needed)
+  if (!chartIsReal) {
+    const yahooProxies = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=3mo&interval=1d`)}`,
+      `https://corsproxy.io/?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=3mo&interval=1d`)}`,
+    ];
+    for (const url of yahooProxies) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const result = data?.chart?.result?.[0];
+        if (!result) continue;
+        const yc = result.indicators?.quote?.[0]?.close?.filter(v => v != null) || [];
+        const yt = result.timestamp || [];
+        if (yc.length >= 10) {
+          closes = yc.slice(-60); timestamps = yt.slice(-60); chartIsReal = true;
+          break;
+        }
+      } catch { continue; }
+    }
+  }
+
+  // 3️⃣ Simulation fallback — labelled ESTIMATED in the chart
   if (!chartIsReal) {
     const days = 60;
     const prices = [];
@@ -598,7 +624,7 @@ function AlertPanel({ ticker, price, alerts, onSetAlert, onRemoveAlert }) {
       <SectionLabel>🔔 Price Alerts</SectionLabel>
 
       {/* Add alert */}
-      <div style={{ display:"flex", gap:"6px", marginBottom:"10px", flexWrap:"wrap" }}>
+      <div className="alert-row" style={{ marginBottom:"10px" }}>
         <select value={alertType} onChange={e => setAlertType(e.target.value)}
           style={{ background:"#0a150a", border:"1px solid #1a3a1a", color:"#6aaa6a",
             fontFamily:"'Courier New',monospace", fontSize:"9px", padding:"4px 6px",
@@ -694,7 +720,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
           <div style={{ fontSize:"9px", color:"#446644", marginTop:"2px", maxWidth:"170px", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{data.name}</div>
         </div>
         <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"6px" }}>
-          <div style={{ ...S.badge, background:cfg.bg, color:cfg.color, borderColor:cfg.border, display:"flex", alignItems:"center", gap:"6px" }}>
+          <div className="status-badge" style={{ ...S.badge, background:cfg.bg, color:cfg.color, borderColor:cfg.border, display:"flex", alignItems:"center", gap:"6px" }}>
             <span style={{
               color: data.status==="DEEP CORRECTION" ? "#00ff88" : data.status==="CORRECTION" ? "#7dff6b"
                    : data.status==="PULLBACK" ? "#ffd166" : data.status==="WATCH" ? "#ff9f43" : "#ff4757",
@@ -776,7 +802,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
       {/* Levels & Catalyst */}
       <div style={{ background:"#060c06", border:"1px solid #0d1a0d", borderRadius:"4px", padding:"10px" }}>
         <SectionLabel>Levels & Catalyst</SectionLabel>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px" }}>
+        <div className="levels-grid" style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px" }}>
           <DataCell label="SUPPORT"      value={data.support    ? fmtC(data.support)    : "—"} color="#00ff88" small />
           <DataCell label="RESISTANCE"   value={data.resistance ? fmtC(data.resistance) : "—"} color="#ff4757" small />
           <DataCell label="NEXT EARNINGS" value={data.nextEarnings ? new Date(data.nextEarnings).toLocaleDateString("en-GB",{day:"numeric",month:"short"}) : "—"} color="#ffd166" small />
@@ -785,7 +811,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
 
       {/* Decision Engine */}
       <div style={{ border:`2px solid ${dec.verdictBorder}`, borderRadius:"6px", overflow:"hidden", boxShadow:`0 0 20px ${dec.verdictBorder}44` }}>
-        <div style={{ background:dec.verdictBg, padding:"12px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <div style={{ background:dec.verdictBg, padding:"12px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }} className="verdict-header">
           <div>
             <div style={{ fontSize:"8px", color:"#446644", letterSpacing:"2px", marginBottom:"4px" }}>AI DECISION ENGINE</div>
             <div style={{ fontSize:"20px", fontWeight:900, color:dec.verdictColor, letterSpacing:"3px" }}>
@@ -793,7 +819,7 @@ function StockCard({ data, onRemove, fearGreed, alerts, onSetAlert, onRemoveAler
               {dec.verdict}
             </div>
           </div>
-          <div style={{ textAlign:"right" }}>
+          <div className="verdict-score" style={{ textAlign:"right" }}>
             <div style={{ fontSize:"8px", color:"#446644", letterSpacing:"1px" }}>SCORE</div>
             <div style={{ fontSize:"24px", fontWeight:900, color:dec.verdictColor }}>{dec.score}</div>
             <div style={{ fontSize:"7px", color:"#264426" }}>out of 95</div>
@@ -1120,7 +1146,7 @@ export default function App() {
 
       {/* HEADER */}
       <div style={S.hdr} className="hdr">
-        <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+        <div className="hdr-logo" style={{ display:"flex", alignItems:"center", gap:"10px" }}>
           <span style={{ fontSize:"22px", color:"#00ff88" }}>◈</span>
           <div>
             <div style={{ fontSize:"17px", fontWeight:900, color:"#00ff88", letterSpacing:"4px" }}>BUYZONE</div>
@@ -1129,18 +1155,20 @@ export default function App() {
         </div>
 
         {/* Fear & Greed */}
-        {fearGreed !== null && (
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"3px",
-            background:"rgba(0,0,0,0.3)", border:`1px solid ${fg.color}`, borderRadius:"6px", padding:"8px 14px" }}>
+        <div className="hdr-fg">
+          {fearGreed !== null && (
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:"3px",
+              background:"rgba(0,0,0,0.3)", border:`1px solid ${fg.color}`, borderRadius:"6px", padding:"7px 12px" }}>
             <div style={{ fontSize:"8px", color:"#446644", letterSpacing:"2px" }}>FEAR & GREED</div>
             <div style={{ fontSize:"22px", lineHeight:1 }}>{fg.emoji}</div>
             <div style={{ fontSize:"16px", fontWeight:900, color:fg.color }}>{Math.round(fearGreed)}</div>
             <div style={{ fontSize:"8px", color:fg.color, letterSpacing:"1px", fontWeight:"bold" }}>{fg.label}</div>
           </div>
-        )}
+          )}
+        </div>
 
         {/* Refresh + Alerts */}
-        <div style={{ display:"flex", gap:"8px", alignItems:"center", flexWrap:"wrap" }}>
+        <div className="hdr-actions" style={{ display:"flex", gap:"8px", alignItems:"center", flexWrap:"wrap" }}>
           <button className="rnBtn"
             style={{ ...S.rnBtn, ...(isRefreshing || !watchlist.length ? S.rnBtnOff : {}) }}
             onClick={refreshNow} disabled={isRefreshing || !watchlist.length}>
@@ -1175,7 +1203,7 @@ export default function App() {
         </div>
 
         {/* Countdown */}
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"6px" }}>
+        <div className="hdr-countdown" style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:"6px" }}>
           <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
             <div className={isRefreshing ? "pulse" : watchlist.length ? "pulse-slow" : ""}
               style={{ width:"7px", height:"7px", borderRadius:"50%",
@@ -1202,18 +1230,18 @@ export default function App() {
       </div>
 
       {/* EXCHANGE SELECTOR */}
-      <div style={{ display:"flex", gap:"0", borderBottom:"1px solid #0d1a0d", background:"#060c06" }}>
+      <div className="exchange-bar">
         {Object.values(EXCHANGES).map(ex => (
           <button key={ex.id}
+            className="exchange-tab"
             onClick={() => { setActiveExchange(ex.id); setInputVal(""); setInputError(""); }}
             style={{
-              flex:1, background: activeExchange===ex.id ? `${ex.color}18` : "transparent",
-              border:"none", borderBottom: activeExchange===ex.id ? `2px solid ${ex.color}` : "2px solid transparent",
+              background: activeExchange===ex.id ? `${ex.color}18` : "transparent",
+              borderBottom: activeExchange===ex.id ? `2px solid ${ex.color}` : "2px solid transparent",
               borderRight:"1px solid #0d1a0d",
               color: activeExchange===ex.id ? ex.color : "#264426",
-              fontFamily:"'Courier New',monospace", fontSize:"11px", fontWeight: activeExchange===ex.id ? "bold" : "normal",
-              padding:"10px 8px", cursor:"pointer", transition:"all 0.2s",
-              display:"flex", flexDirection:"column", alignItems:"center", gap:"2px",
+              fontWeight: activeExchange===ex.id ? "bold" : "normal",
+              flexDirection:"column", alignItems:"center", gap:"2px",
             }}>
             <span style={{ fontSize:"18px" }}>{ex.flag}</span>
             <span style={{ letterSpacing:"1px" }}>{ex.label}</span>
@@ -1239,8 +1267,8 @@ export default function App() {
         </div>
       )}
       {currentList.length > 0 && (
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 20px", borderBottom:"1px solid #0d1a0d", background:"#060c06", flexWrap:"wrap", gap:"8px" }}>
-          <div style={{ display:"flex", gap:"12px", flexWrap:"wrap" }}>
+        <div className="status-bar" style={{ borderBottom:"1px solid #0d1a0d", background:"#060c06" }}>
+          <div className="status-labels">
             {Object.entries(STATUS_CFG).map(([name,cfg]) => (
               <span key={name} style={{ fontSize:"9px", letterSpacing:"1px", color: counts[name] ? cfg.color : "#1a3a1a", whiteSpace:"nowrap" }}>
                 {cfg.icon} {name}{counts[name] ? ` (${counts[name]})` : ""}
@@ -1254,7 +1282,7 @@ export default function App() {
 
       {/* ADD BAR */}
       <div style={{ display:"flex", alignItems:"center", gap:"10px", padding:"12px 20px", borderBottom:"1px solid #0d1a0d", flexWrap:"wrap" }} className="add-bar">
-        <div style={{ display:"flex", alignItems:"center", background:"#09120a", border:`1px solid ${exCfg.color}33`, borderRadius:"4px", padding:"0 12px", flex:1, maxWidth:"400px" }}>
+        <div style={{ display:"flex", alignItems:"center", background:"#09120a", border:`1px solid ${exCfg.color}33`, borderRadius:"4px", padding:"0 12px", flex:1 }}>
           <span style={{ color: exCfg.color, fontSize:"15px", fontWeight:"bold", marginRight:"6px" }}>{exCfg.flag}</span>
           <input style={{ ...S.inp, color: exCfg.color }} value={inputVal}
             onChange={e => { setInputVal(e.target.value.toUpperCase()); setInputError(""); }}
@@ -1352,21 +1380,114 @@ const css = `
   @keyframes pulse-slow { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .pulse { animation:pulse 0.7s ease infinite; }
   .pulse-slow { animation:pulse-slow 3s ease infinite; }
-  @media (max-width:600px) {
-    .hdr { flex-direction:column!important; align-items:flex-start!important; padding:12px 14px!important; gap:10px!important; }
-    .rnBtn { width:100%!important; justify-content:center!important; font-size:12px!important; }
-    .add-bar { padding:10px 14px!important; }
-    .addBtn { padding:10px 14px!important; font-size:12px!important; }
-    .grid { grid-template-columns:1fr!important; padding:12px 10px!important; gap:12px!important; }
-    .card { padding:14px 12px!important; }
-    .sugg-row { gap:6px!important; }
-    .suggBtn { font-size:10px!important; padding:6px 10px!important; }
+
+  /* Exchange tab bar — horizontally scrollable */
+  .exchange-bar {
+    display: flex;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    border-bottom: 1px solid #0d1a0d;
+    background: #060c06;
   }
+  .exchange-bar::-webkit-scrollbar { display: none; }
+  .exchange-tab {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 11px 20px;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    white-space: nowrap;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+
+  /* Alert panel row */
+  .alert-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .alert-row select { flex:1; min-width:130px; }
+
+  /* Tablet */
   @media (max-width:900px) and (min-width:601px) {
     .grid { grid-template-columns:1fr 1fr!important; padding:14px!important; }
   }
+
+  /* Mobile ≤600px */
+  @media (max-width:600px) {
+    /* Header: 2-column grid layout */
+    .hdr {
+      display: grid!important;
+      grid-template-columns: 1fr auto!important;
+      padding: 11px 12px!important;
+      gap: 8px!important;
+    }
+    .hdr-logo      { grid-column:1; grid-row:1; }
+    .hdr-fg        { grid-column:2; grid-row:1; justify-self:end; align-self:start; }
+    .hdr-actions   {
+      grid-column:1/-1; grid-row:2;
+      display:flex!important; flex-wrap:wrap!important; gap:7px!important;
+    }
+    .hdr-countdown {
+      grid-column:1/-1; grid-row:3;
+      display:flex!important; flex-direction:row!important;
+      justify-content:space-between!important; align-items:center!important;
+      flex-wrap:wrap!important; gap:5px!important;
+    }
+
+    .rnBtn {
+      flex:1!important; justify-content:center!important;
+      font-size:12px!important; min-height:44px!important;
+      padding:10px 16px!important;
+    }
+
+    /* Exchange tabs */
+    .exchange-tab { padding:12px 15px!important; font-size:10px!important; letter-spacing:1px!important; }
+
+    /* Add bar */
+    .add-bar { padding:10px 12px!important; gap:8px!important; }
+    .add-bar > div { max-width:100%!important; }
+    .addBtn { min-height:44px!important; padding:10px 16px!important; font-size:12px!important; }
+
+    /* Grid + cards */
+    .grid { grid-template-columns:1fr!important; padding:10px 8px!important; gap:10px!important; }
+    .card { padding:12px 10px!important; }
+
+    /* Card badge — shorter text fits on one line */
+    .status-badge { font-size:9px!important; padding:4px 7px!important; letter-spacing:0.5px!important; }
+
+    /* Suggestions */
+    .sugg-row { gap:6px!important; }
+    .suggBtn  { font-size:10px!important; padding:8px 12px!important; min-height:36px!important; }
+
+    /* Levels: 3-col → 2-col */
+    .levels-grid { grid-template-columns:1fr 1fr!important; }
+
+    /* Alert panel: stack vertically */
+    .alert-row { flex-direction:column!important; align-items:stretch!important; }
+    .alert-row select,
+    .alert-row input,
+    .alert-row button { width:100%!important; min-height:40px!important; font-size:12px!important; }
+
+    /* Decision engine header */
+    .verdict-header { flex-direction:column!important; align-items:flex-start!important; gap:6px!important; }
+    .verdict-score  { align-self:flex-end!important; }
+
+    /* Interval buttons */
+    .intBtn { padding:7px 9px!important; font-size:9px!important; }
+
+    /* Status bar */
+    .status-bar { padding:6px 10px!important; gap:5px!important; }
+  }
+
+  /* Touch: bigger tap targets */
   @media (hover:none) {
-    .iconBtn { padding:8px 14px!important; font-size:13px!important; }
-    .intBtn  { padding:6px 10px!important; font-size:10px!important; }
+    .iconBtn { padding:9px 14px!important; font-size:13px!important; min-height:40px!important; }
+    .intBtn  { padding:7px 10px!important; font-size:10px!important; }
+    .exchange-tab { min-height:48px!important; }
   }
 `;
