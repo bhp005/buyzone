@@ -22,7 +22,7 @@ const getStatus = (p) =>
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt     = (n, dec=2, currency="USD") => {
   if (n == null || isNaN(n)) return "—";
-  const sym = { USD:"$", GBP:"£", INR:"₹" }[currency] || "$";
+  const sym = { USD:"$", GBP:"£", INR:"Rs" }[currency] || "$";
   return `${sym}${Number(n).toFixed(dec)}`;
 };
 const fmtNum  = (n, dec=2) => (n != null && !isNaN(n) ? Number(n).toFixed(dec) : "—");
@@ -51,7 +51,7 @@ const EXCHANGES = {
   },
   IN: {
     id: "IN", flag: "🇮🇳", label: "India", sublabel: "NSE / BSE",
-    currency: "INR", symbol: "₹",
+    currency: "INR", symbol: "Rs",
     suggestions: ["RELIANCE","TCS","INFY","HDFCBANK","WIPRO","BAJFINANCE"],
     placeholder: "TCS, RELIANCE, INFY… (.NS added automatically)",
     color: "#ff9f43",
@@ -62,7 +62,7 @@ const EXCHANGES = {
 // Currency-aware formatter
 const fmtCurrency = (n, currency="USD", dec=2) => {
   if (n == null || isNaN(n)) return "—";
-  const sym = { USD:"$", GBP:"£", INR:"₹" }[currency] || "$";
+  const sym = { USD:"$", GBP:"£", INR:"Rs" }[currency] || "$";
   return `${sym}${Number(n).toFixed(dec)}`;
 };
 
@@ -199,12 +199,42 @@ function toFinnhubTicker(ticker) {
   if (ticker.endsWith(".L"))  return `LSE:${ticker.replace(".L", "")}`;
   if (ticker.endsWith(".NS")) return `NSE:${ticker.replace(".NS", "")}`;
   if (ticker.endsWith(".BO")) return `BSE:${ticker.replace(".BO", "")}`;
-  return ticker; // US stocks use ticker as-is
+  return ticker;
 }
 
-// Alpha Vantage uses Yahoo-style suffixes as-is (.L, .NS etc)
-function toAlphaTicker(ticker) {
-  return ticker; // AV accepts .L, .NS, .BO natively
+function isInternational(ticker) {
+  return ticker.endsWith(".L") || ticker.endsWith(".NS") || ticker.endsWith(".BO");
+}
+
+// Fetch international stocks via Yahoo Finance proxy
+async function fetchYahooQuote(ticker) {
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`)}`,
+    `https://corsproxy.io/?url=${encodeURIComponent(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=1y&interval=1d`)}`,
+  ];
+  for (const url of proxies) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const result = data?.chart?.result?.[0];
+      if (!result) continue;
+      const meta   = result.meta;
+      const closes = result.indicators?.quote?.[0]?.close?.filter(Boolean) || [];
+      const timestamps = result.timestamp || [];
+      return {
+        cur:    meta.regularMarketPrice,
+        high52: meta.fiftyTwoWeekHigh,
+        low52:  meta.fiftyTwoWeekLow,
+        dayChangePct: meta.regularMarketChangePercent ?? 0,
+        name:   meta.longName || meta.shortName || ticker,
+        currency: meta.currency || "USD",
+        closes: closes.slice(-60),
+        timestamps: timestamps.slice(-60),
+      };
+    } catch { continue; }
+  }
+  return null;
 }
 const getFinnhubKey = () =>
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_FINNHUB_KEY)
@@ -212,12 +242,65 @@ const getFinnhubKey = () =>
 
 async function fetchOneTicker(ticker, key) {
   const base = "https://finnhub.io/api/v1";
-  const fhTicker = toFinnhubTicker(ticker); // convert to Finnhub format
   const earnFrom = new Date().toISOString().split("T")[0];
   const earnTo   = new Date(Date.now() + 120 * 86400000).toISOString().split("T")[0];
   const alphaKey = (typeof import.meta !== "undefined" && import.meta.env?.VITE_ALPHA_KEY)
     ? import.meta.env.VITE_ALPHA_KEY : null;
 
+  // ── International stocks: use Yahoo Finance
+  if (isInternational(ticker)) {
+    const yahoo = await fetchYahooQuote(ticker);
+    if (!yahoo || !yahoo.cur) return { ticker, error: "Could not fetch data — try again" };
+
+    const { cur, high52, low52, dayChangePct, name, closes, timestamps } = yahoo;
+    if (!high52 || !low52) return { ticker, error: "Insufficient market data" };
+
+    const pct     = ((cur - high52) / high52) * 100;
+    const status  = getStatus(pct);
+    const target  = cur * 1.12;
+    const bestBuy = high52 * 0.73;
+    const upside  = ((target - cur) / cur * 100);
+    const dn      = Math.abs(pct).toFixed(0);
+    const range   = high52 - low52;
+    const support    = parseFloat((low52 + range * 0.236).toFixed(2));
+    const resistance = parseFloat((low52 + range * 0.618).toFixed(2));
+
+    // Chart from Yahoo closes
+    const chartIsReal = closes.length >= 10;
+    let finalCloses = closes, finalTimestamps = timestamps;
+    if (!chartIsReal) {
+      const days = 60, prices = [], vol = ((high52 - low52) / low52) * 0.015;
+      let p = cur;
+      for (let i = days - 1; i >= 0; i--) {
+        prices[i] = p;
+        const seed = ticker.charCodeAt(i % ticker.length) / 128;
+        p = Math.max(low52 * 0.95, Math.min(high52 * 1.02, p - (seed - 0.5) * 2 * vol * p));
+      }
+      finalCloses     = prices;
+      finalTimestamps = Array.from({ length: days }, (_, i) => Math.floor((Date.now() - (days-1-i) * 86400000) / 1000));
+    }
+
+    const strategy = {
+      "DEEP CORRECTION": `Down ${dn}% from high. Exceeds the 27% "Best Buy" buffer — high value zone.`,
+      "CORRECTION":      `${dn}% pullback. Significant discount, approaching strategic buy floor.`,
+      "PULLBACK":        `${dn}% off highs. Minor weakness — set alerts for the 10-15% range.`,
+      "WATCH":           `Only ${dn}% below high. Wait for a 10%+ correction before scaling in.`,
+      "HEALTHY":         `At or near 52W high. Expensive — avoid chasing, wait for a pullback.`,
+    }[status];
+
+    return {
+      ticker, name, price: cur, high52, low52,
+      pct, upside, dayChangePct,
+      target, bestBuy, status, strategy,
+      pe: null, eps: null, ret52w: null, vol10d: null, vol3m: null,
+      rsi: null, nextEarnings: null, support, resistance,
+      closes: finalCloses, timestamps: finalTimestamps, chartIsReal,
+      updatedAt: Date.now(),
+    };
+  }
+
+  // ── US stocks: use Finnhub as before
+  const fhTicker = toFinnhubTicker(ticker);
   const [quoteRes, metricRes, targetRes, profileRes, earnRes] = await Promise.all([
     fetch(`${base}/quote?symbol=${fhTicker}&token=${key}`),
     fetch(`${base}/stock/metric?symbol=${fhTicker}&metric=all&token=${key}`),
